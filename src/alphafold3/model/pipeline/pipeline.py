@@ -48,10 +48,15 @@ def calculate_bucket_size(
   bucket_idx = bisect.bisect_left(buckets, num_tokens)
 
   if bucket_idx == len(buckets):
-    raise ValueError(
-        f'Number of tokens {num_tokens} is more than the largest currently'
-        f' supported bucket size {buckets[-1]}.'
+    logging.warning(
+        'Creating a new bucket of size %d since the input has more tokens than'
+        ' the largest bucket size %d. This may trigger a re-compilation of the'
+        ' model. Consider additional large bucket sizes to avoid excessive'
+        ' re-compilation.',
+        num_tokens,
+        buckets[-1],
     )
+    return num_tokens
 
   return buckets[bucket_idx]
 
@@ -250,8 +255,18 @@ class WholePdbPipeline:
           f'({total_tokens} < {self._config.min_total_residues})'
       )
 
+    logging.info(
+        'Calculating bucket size for input with %d tokens.', total_tokens
+    )
     padded_token_length = calculate_bucket_size(
         total_tokens, self._config.buckets
+    )
+    logging.info(
+        'Got bucket size %d for input with %d tokens, resulting in %d padded'
+        ' tokens.',
+        padded_token_length,
+        total_tokens,
+        padded_token_length - total_tokens,
     )
 
     # Padding shapes for all features.

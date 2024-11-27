@@ -8,15 +8,7 @@
 # if received directly from Google. Use is subject to terms of use available at
 # https://github.com/google-deepmind/alphafold3/blob/main/WEIGHTS_TERMS_OF_USE.md
 
-"""Post-processing utilities for AlphaFold inference results.
-
-Post-processing includes:
-  - Adding watermark to the predicted structure.
-  - Adding mmCIF metadata fields.
-  - Calculating confidences.
-  - Compressing the resulting artifacts.
-  - Writing the artifacts to blobstore or returning raw result.
-"""
+"""Post-processing utilities for AlphaFold inference results."""
 
 import dataclasses
 import datetime

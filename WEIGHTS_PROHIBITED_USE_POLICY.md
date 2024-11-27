@@ -8,8 +8,8 @@ free of charge for certain non-commercial uses in accordance with the
 restrictions set out below. This policy uses the same defined terms as the
 [AlphaFold 3 Model Parameters Terms of Use](https://github.com/google-deepmind/alphafold3/blob/main/WEIGHTS_TERMS_OF_USE.md).
 
-**You must not access or use nor allow others to access or use the the AlphaFold
-3 Assets:**
+**You must not access or use nor allow others to access or use the AlphaFold 3
+Assets:**
 
 1.  **On behalf of a commercial organization or in connection with any
     commercial activities, including research on behalf of commercial

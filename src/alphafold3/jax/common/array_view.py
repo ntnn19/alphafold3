@@ -18,6 +18,7 @@ from types import EllipsisType  # pylint: disable=g-importing-member
 from typing import Any, Self, TypeAlias, TypeVar
 
 import jax
+import jax.experimental
 from jax.experimental import pallas as pl
 import jax.numpy as jnp
 from jax.typing import ArrayLike  # pylint: disable=g-importing-member
@@ -92,10 +93,16 @@ class ArrayView:
     return self.transpose()
 
   @property
+  def _index_dtype(self) -> jax.typing.DTypeLike:
+    i32_max = jnp.iinfo(jnp.int32).max
+    return jnp.int32 if (self.base.size <= i32_max) else jnp.int64
+
+  @property
   def offsets(self) -> jax.Array:
     """Returns array of offsets into `base` for each element."""
-    idxs = jnp.indices(self.shape, sparse=True)
-    return self.offset + sum(s * idx for s, idx in zip(self.strides, idxs))
+    with jax.experimental.enable_x64():
+      idxs = jnp.indices(self.shape, sparse=True, dtype=self._index_dtype)
+      return self.offset + sum(s * idx for s, idx in zip(self.strides, idxs))
 
   def astype(self, dtype: jax.typing.DTypeLike) -> Self:
     return self._replace(base=self.base.astype(dtype))
@@ -255,29 +262,34 @@ class ArrayView:
 
     shape = []
     strides = []
-    offset = self.offset
+    with jax.experimental.enable_x64():
 
-    for idx, dim, stride in zip(idxs, self.shape, self.strides, strict=True):
-      if isinstance(idx, int):
-        if not (-dim <= idx < dim):
-          raise ValueError("Slice index out of range.")
-        offset += stride * (idx % dim)
-      elif isinstance(idx, ScalarInt):
-        offset += stride * idx
-      elif isinstance(idx, slice):
-        start, stop, step = idx.indices(dim)
-        if step >= 0:
-          shape.append(pl.cdiv(stop - start, step))
+      def as_index(x):
+        return x.astype(self._index_dtype) if isinstance(x, jax.Array) else x
+
+      offset = as_index(self.offset)
+
+      for idx, dim, stride in zip(idxs, self.shape, self.strides, strict=True):
+        if isinstance(idx, int):
+          if not (-dim <= idx < dim):
+            raise ValueError("Slice index out of range.")
+          offset += stride * (idx % dim)
+        elif isinstance(idx, ScalarInt):
+          offset += stride * as_index(idx)
+        elif isinstance(idx, slice):
+          start, stop, step = idx.indices(dim)
+          if step >= 0:
+            shape.append(pl.cdiv(stop - start, step))
+          else:
+            shape.append(pl.cdiv(start - stop, -step))
+          strides.append(stride * step)
+          offset += stride * start
+        elif isinstance(idx, pl.Slice):
+          shape.append(idx.size)
+          strides.append(stride * idx.stride)
+          offset += stride * as_index(idx.start)
         else:
-          shape.append(pl.cdiv(start - stop, -step))
-        strides.append(stride * step)
-        offset += stride * start
-      elif isinstance(idx, pl.Slice):
-        shape.append(idx.size)
-        strides.append(stride * idx.stride)
-        offset += stride * idx.start
-      else:
-        raise ValueError(f"Unexpected indexer: {idx}")
+          raise ValueError(f"Unexpected indexer: {idx}")
 
     return self._replace(shape=shape, strides=strides, offset=offset)
 

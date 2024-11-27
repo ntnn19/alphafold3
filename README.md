@@ -67,11 +67,21 @@ docker run -it \
     --volume <DATABASES_DIR>:/root/public_databases \
     --gpus all \
     alphafold3 \
-python run_alphafold.py \
+    python run_alphafold.py \
     --json_path=/root/af_input/fold_input.json \
     --model_dir=/root/models \
     --output_dir=/root/af_output
 ```
+
+There are various flags that you can pass to the `run_alphafold.py` command, to
+list them all run `python run_alphafold.py --help`. Two fundamental flags that
+control which parts AlphaFold 3 will run are:
+
+*   `--run_data_pipeline` (defaults to `true`): whether to run the data
+    pipeline, i.e. genetic and template search. This part is CPU-only, time
+    consuming and could be run on a machine without a GPU.
+*   `--run_inference` (defaults to `true`): whether to run the inference. This
+    part requires a GPU.
 
 ## AlphaFold 3 Input
 

@@ -114,7 +114,7 @@ class ProteinChain:
   def __post_init__(self):
     if not all(res.isalpha() for res in self.sequence):
       raise ValueError(
-          f'Protein must contain only digits, got "{self.sequence}"'
+          f'Protein must contain only letters, got "{self.sequence}"'
       )
     if any(not 0 < mod[1] <= len(self.sequence) for mod in self.ptms):
       raise ValueError(f'Invalid protein modification index: {self.ptms}')
@@ -269,7 +269,7 @@ class RnaChain:
 
   def __post_init__(self):
     if not all(res.isalpha() for res in self.sequence):
-      raise ValueError(f'RNA must contain only digits, got "{self.sequence}"')
+      raise ValueError(f'RNA must contain only letters, got "{self.sequence}"')
     if any(not 0 < mod[1] <= len(self.sequence) for mod in self.modifications):
       raise ValueError(f'Invalid RNA modification index: {self.modifications}')
 
@@ -356,7 +356,7 @@ class DnaChain:
 
   def __post_init__(self):
     if not all(res.isalpha() for res in self.sequence):
-      raise ValueError(f'DNA must contain only digits, got "{self.sequence}"')
+      raise ValueError(f'DNA must contain only letters, got "{self.sequence}"')
     if any(not 0 < mod[1] <= len(self.sequence) for mod in self.modifications):
       raise ValueError(f'Invalid DNA modification index: {self.modifications}')
 
@@ -540,9 +540,7 @@ class Input:
 
     chain_ids = [c.id for c in self.chains]
     if any(not c.id.isalpha() or c.id.islower() for c in self.chains):
-      raise ValueError(
-          f'IDs must be alphanumeric and upper case, got: {chain_ids}'
-      )
+      raise ValueError(f'IDs must be upper case letters, got: {chain_ids}')
     if len(set(chain_ids)) != len(chain_ids):
       raise ValueError('Input JSON contains sequences with duplicate IDs.')
 
@@ -878,10 +876,12 @@ class Input:
           )
 
     bonded_atom_pairs = []
+    chain_ids = set(c.id for c in chains)
     for atom_a, atom_b, _ in struc.iter_bonds():
-      beg = (atom_a['chain_id'], int(atom_a['res_id']), atom_a['atom_name'])
-      end = (atom_b['chain_id'], int(atom_b['res_id']), atom_b['atom_name'])
-      bonded_atom_pairs.append((beg, end))
+      if atom_a['chain_id'] in chain_ids and atom_b['chain_id'] in chain_ids:
+        beg = (atom_a['chain_id'], int(atom_a['res_id']), atom_a['atom_name'])
+        end = (atom_b['chain_id'], int(atom_b['res_id']), atom_b['atom_name'])
+        bonded_atom_pairs.append((beg, end))
 
     return cls(
         name=struc.name,

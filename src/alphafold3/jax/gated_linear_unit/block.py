@@ -15,6 +15,7 @@ from typing import Any, TypeAlias
 
 from alphafold3.jax.common import array_view
 import jax
+import jax.experimental
 from jax.experimental import pallas as pl
 import jax.numpy as jnp
 import jaxtyping
@@ -43,7 +44,8 @@ def load_block(
     idx = ref[idx].offsets
     ref = ref.base
   other = None if mask is None else other
-  return pl.load(ref, idx, mask=mask, other=other, **kwargs)
+  with jax.experimental.enable_x64():
+    return pl.load(ref, idx, mask=mask, other=other, **kwargs)
 
 
 @jaxtyping.jaxtyped(typechecker=typeguard.typechecked)
@@ -62,7 +64,8 @@ def store_block(
   if isinstance(ref, array_view.ArrayView):
     idx = ref[idx].offsets
     ref = ref.base
-  pl.store(ref, idx, val.astype(ref.dtype), mask=mask, **kwargs)
+  with jax.experimental.enable_x64():
+    pl.store(ref, idx, val.astype(ref.dtype), mask=mask, **kwargs)
 
 
 def in_bounds_mask(

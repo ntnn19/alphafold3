@@ -22,6 +22,7 @@ https://github.com/google-deepmind/alphafold3/blob/main/WEIGHTS_TERMS_OF_USE.md
 from collections.abc import Callable, Iterable, Sequence
 import csv
 import dataclasses
+import datetime
 import functools
 import multiprocessing
 import os
@@ -31,7 +32,7 @@ import string
 import textwrap
 import time
 import typing
-from typing import Final, Protocol, Self, TypeVar, overload
+from typing import Protocol, Self, TypeVar, overload
 
 from absl import app
 from absl import flags
@@ -56,8 +57,8 @@ import numpy as np
 
 
 _HOME_DIR = pathlib.Path(os.environ.get('HOME'))
-DEFAULT_MODEL_DIR = _HOME_DIR / 'models/model_103275239_1'
-DEFAULT_DB_DIR = _HOME_DIR / 'public_databases'
+_DEFAULT_MODEL_DIR = _HOME_DIR / 'models'
+_DEFAULT_DB_DIR = _HOME_DIR / 'public_databases'
 
 
 # Input and output paths.
@@ -76,25 +77,10 @@ _OUTPUT_DIR = flags.DEFINE_string(
     None,
     'Path to a directory where the results will be saved.',
 )
-
-_MODEL_DIR = flags.DEFINE_string(
+MODEL_DIR = flags.DEFINE_string(
     'model_dir',
-    DEFAULT_MODEL_DIR.as_posix(),
+    _DEFAULT_MODEL_DIR.as_posix(),
     'Path to the model to use for inference.',
-)
-
-_FLASH_ATTENTION_IMPLEMENTATION = flags.DEFINE_enum(
-    'flash_attention_implementation',
-    default='triton',
-    enum_values=['triton', 'cudnn', 'xla'],
-    help=(
-        "Flash attention implementation to use. 'triton' and 'cudnn' uses a"
-        ' Triton and cuDNN flash attention implementation, respectively. The'
-        ' Triton kernel is fastest and has been tested more thoroughly. The'
-        " Triton and cuDNN kernels require Ampere GPUs or later. 'xla' uses an"
-        ' XLA attention implementation (no flash attention) and is portable'
-        ' across GPU devices.'
-    ),
 )
 
 # Control which stages to run.
@@ -137,11 +123,13 @@ _HMMBUILD_BINARY_PATH = flags.DEFINE_string(
 )
 
 # Database paths.
-_DB_DIR = flags.DEFINE_string(
+DB_DIR = flags.DEFINE_multi_string(
     'db_dir',
-    DEFAULT_DB_DIR.as_posix(),
-    'Path to the directory containing the databases.',
+    (_DEFAULT_DB_DIR.as_posix(),),
+    'Path to the directory containing the databases. Can be specified multiple'
+    ' times to search multiple directories in order.',
 )
+
 _SMALL_BFD_DATABASE_PATH = flags.DEFINE_string(
     'small_bfd_database_path',
     '${DB_DIR}/bfd-first_non_consensus_sequences.fasta',
@@ -180,7 +168,7 @@ _RNA_CENTRAL_DATABASE_PATH = flags.DEFINE_string(
 )
 _PDB_DATABASE_PATH = flags.DEFINE_string(
     'pdb_database_path',
-    '${DB_DIR}/pdb_2022_09_28_mmcif_files.tar',
+    '${DB_DIR}/mmcif_files',
     'PDB database directory with mmCIF files path, used for template search.',
 )
 _SEQRES_DATABASE_PATH = flags.DEFINE_string(
@@ -203,27 +191,42 @@ _NHMMER_N_CPU = flags.DEFINE_integer(
     ' beyond 8 CPUs provides very little additional speedup.',
 )
 
-# Compilation cache
+# Template search configuration.
+_MAX_TEMPLATE_DATE = flags.DEFINE_string(
+    'max_template_date',
+    '2021-09-30',  # By default, use the date from the AlphaFold 3 paper.
+    'Maximum template release date to consider. Format: YYYY-MM-DD. All '
+    'templates released after this date will be ignored.',
+)
+
+# JAX inference performance tuning.
 _JAX_COMPILATION_CACHE_DIR = flags.DEFINE_string(
     'jax_compilation_cache_dir',
     None,
     'Path to a directory for the JAX compilation cache.',
 )
-
-_BUCKETS: Final[tuple[int, ...]] = (
-    256,
-    512,
-    768,
-    1024,
-    1280,
-    1536,
-    2048,
-    2560,
-    3072,
-    3584,
-    4096,
-    4608,
-    5120,
+_BUCKETS = flags.DEFINE_list(
+    'buckets',
+    # pyformat: disable
+    ['256', '512', '768', '1024', '1280', '1536', '2048', '2560', '3072',
+     '3584', '4096', '4608', '5120'],
+    # pyformat: enable
+    'Strictly increasing order of token sizes for which to cache compilations.'
+    ' For any input with more tokens than the largest bucket size, a new bucket'
+    ' is created for exactly that number of tokens.',
+)
+_FLASH_ATTENTION_IMPLEMENTATION = flags.DEFINE_enum(
+    'flash_attention_implementation',
+    default='triton',
+    enum_values=['triton', 'cudnn', 'xla'],
+    help=(
+        "Flash attention implementation to use. 'triton' and 'cudnn' uses a"
+        ' Triton and cuDNN flash attention implementation, respectively. The'
+        ' Triton kernel is fastest and has been tested more thoroughly. The'
+        " Triton and cuDNN kernels require Ampere GPUs or later. 'xla' uses an"
+        ' XLA attention implementation (no flash attention) and is portable'
+        ' across GPU devices.'
+    ),
 )
 
 
@@ -484,6 +487,22 @@ def process_fold_input(
   ...
 
 
+def replace_db_dir(path_with_db_dir: str, db_dirs: Sequence[str]) -> str:
+  """Replaces the DB_DIR placeholder in a path with the given DB_DIR."""
+  template = string.Template(path_with_db_dir)
+  if 'DB_DIR' in template.get_identifiers():
+    for db_dir in db_dirs:
+      path = template.substitute(DB_DIR=db_dir)
+      if os.path.exists(path):
+        return path
+    raise FileNotFoundError(
+        f'{path_with_db_dir} with ${{DB_DIR}} not found in any of {db_dirs}.'
+    )
+  if not os.path.exists(path_with_db_dir):
+    raise FileNotFoundError(f'{path_with_db_dir} does not exist.')
+  return path_with_db_dir
+
+
 def process_fold_input(
     fold_input: folding_input.Input,
     data_pipeline_config: pipeline.DataPipelineConfig | None,
@@ -515,6 +534,16 @@ def process_fold_input(
 
   if not fold_input.chains:
     raise ValueError('Fold input has no chains.')
+
+  if os.path.exists(output_dir) and os.listdir(output_dir):
+    new_output_dir = (
+        f'{output_dir}_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}'
+    )
+    print(
+        f'Output directory {output_dir} exists and non-empty, using instead '
+        f' {new_output_dir}.'
+    )
+    output_dir = new_output_dir
 
   if model_runner is not None:
     # If we're running inference, check we can load the model parameters before
@@ -596,6 +625,17 @@ def main(_):
     print(f'Failed to create output directory {_OUTPUT_DIR.value}: {e}')
     raise
 
+  if _RUN_INFERENCE.value:
+    # Fail early on incompatible devices, but only if we're running inference.
+    gpu_devices = jax.local_devices(backend='gpu')
+    if gpu_devices and float(gpu_devices[0].compute_capability) < 8.0:
+      raise ValueError(
+          'There are currently known unresolved numerical issues with using'
+          ' devices with compute capability less than 8.0. See '
+          ' https://github.com/google-deepmind/alphafold3/issues/59 for'
+          ' tracking.'
+      )
+
   notice = textwrap.wrap(
       'Running AlphaFold 3. Please note that standard AlphaFold 3 model'
       ' parameters are only available under terms of use provided at'
@@ -610,30 +650,28 @@ def main(_):
   print('\n'.join(notice))
 
   if _RUN_DATA_PIPELINE.value:
-    replace_db_dir = lambda x: string.Template(x).substitute(
-        DB_DIR=_DB_DIR.value
-    )
+    expand_path = lambda x: replace_db_dir(x, DB_DIR.value)
+    max_template_date = datetime.date.fromisoformat(_MAX_TEMPLATE_DATE.value)
     data_pipeline_config = pipeline.DataPipelineConfig(
         jackhmmer_binary_path=_JACKHMMER_BINARY_PATH.value,
         nhmmer_binary_path=_NHMMER_BINARY_PATH.value,
         hmmalign_binary_path=_HMMALIGN_BINARY_PATH.value,
         hmmsearch_binary_path=_HMMSEARCH_BINARY_PATH.value,
         hmmbuild_binary_path=_HMMBUILD_BINARY_PATH.value,
-        small_bfd_database_path=replace_db_dir(_SMALL_BFD_DATABASE_PATH.value),
-        mgnify_database_path=replace_db_dir(_MGNIFY_DATABASE_PATH.value),
-        uniprot_cluster_annot_database_path=replace_db_dir(
+        small_bfd_database_path=expand_path(_SMALL_BFD_DATABASE_PATH.value),
+        mgnify_database_path=expand_path(_MGNIFY_DATABASE_PATH.value),
+        uniprot_cluster_annot_database_path=expand_path(
             _UNIPROT_CLUSTER_ANNOT_DATABASE_PATH.value
         ),
-        uniref90_database_path=replace_db_dir(_UNIREF90_DATABASE_PATH.value),
-        ntrna_database_path=replace_db_dir(_NTRNA_DATABASE_PATH.value),
-        rfam_database_path=replace_db_dir(_RFAM_DATABASE_PATH.value),
-        rna_central_database_path=replace_db_dir(
-            _RNA_CENTRAL_DATABASE_PATH.value
-        ),
-        pdb_database_path=replace_db_dir(_PDB_DATABASE_PATH.value),
-        seqres_database_path=replace_db_dir(_SEQRES_DATABASE_PATH.value),
+        uniref90_database_path=expand_path(_UNIREF90_DATABASE_PATH.value),
+        ntrna_database_path=expand_path(_NTRNA_DATABASE_PATH.value),
+        rfam_database_path=expand_path(_RFAM_DATABASE_PATH.value),
+        rna_central_database_path=expand_path(_RNA_CENTRAL_DATABASE_PATH.value),
+        pdb_database_path=expand_path(_PDB_DATABASE_PATH.value),
+        seqres_database_path=expand_path(_SEQRES_DATABASE_PATH.value),
         jackhmmer_n_cpu=_JACKHMMER_N_CPU.value,
         nhmmer_n_cpu=_NHMMER_N_CPU.value,
+        max_template_date=max_template_date,
     )
   else:
     print('Skipping running the data pipeline.')
@@ -652,7 +690,7 @@ def main(_):
             )
         ),
         device=devices[0],
-        model_dir=pathlib.Path(_MODEL_DIR.value),
+        model_dir=pathlib.Path(MODEL_DIR.value),
     )
   else:
     print('Skipping running model inference.')
@@ -665,7 +703,7 @@ def main(_):
         data_pipeline_config=data_pipeline_config,
         model_runner=model_runner,
         output_dir=os.path.join(_OUTPUT_DIR.value, fold_input.sanitised_name()),
-        buckets=_BUCKETS,
+        buckets=tuple(int(bucket) for bucket in _BUCKETS.value),
     )
 
   print(f'Done processing {len(fold_inputs)} fold inputs.')

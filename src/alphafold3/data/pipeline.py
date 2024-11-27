@@ -22,20 +22,61 @@ from alphafold3.constants import mmcif_names
 from alphafold3.data import msa
 from alphafold3.data import msa_config
 from alphafold3.data import structure_stores
-from alphafold3.data import templates
+from alphafold3.data import templates as templates_lib
+
+
+# Cache to avoid re-running template search for the same sequence in homomers.
+@functools.cache
+def _get_protein_templates(
+    sequence: str,
+    input_msa_a3m: str,
+    run_template_search: bool,
+    templates_config: msa_config.TemplatesConfig,
+    pdb_database_path: str,
+) -> templates_lib.Templates:
+  """Searches for templates for a single protein chain."""
+  if run_template_search:
+    templates_start_time = time.time()
+    logging.info('Getting protein templates for sequence %s', sequence)
+    protein_templates = templates_lib.Templates.from_seq_and_a3m(
+        query_sequence=sequence,
+        msa_a3m=input_msa_a3m,
+        max_template_date=templates_config.filter_config.max_template_date,
+        database_path=templates_config.template_tool_config.database_path,
+        hmmsearch_config=templates_config.template_tool_config.hmmsearch_config,
+        max_a3m_query_sequences=None,
+        chain_poly_type=mmcif_names.PROTEIN_CHAIN,
+        structure_store=structure_stores.StructureStore(pdb_database_path),
+        filter_config=templates_config.filter_config,
+    )
+    logging.info(
+        'Getting protein templates took %.2f seconds for sequence %s',
+        time.time() - templates_start_time,
+        sequence,
+    )
+  else:
+    logging.info('Skipping template search for sequence %s', sequence)
+    protein_templates = templates_lib.Templates(
+        query_sequence=sequence,
+        hits=[],
+        max_template_date=templates_config.filter_config.max_template_date,
+        structure_store=structure_stores.StructureStore(pdb_database_path),
+    )
+  return protein_templates
 
 
 # Cache to avoid re-running the MSA tools for the same sequence in homomers.
 @functools.cache
 def _get_protein_msa_and_templates(
     sequence: str,
+    run_template_search: bool,
     uniref90_msa_config: msa_config.RunConfig,
     mgnify_msa_config: msa_config.RunConfig,
     small_bfd_msa_config: msa_config.RunConfig,
     uniprot_msa_config: msa_config.RunConfig,
     templates_config: msa_config.TemplatesConfig,
     pdb_database_path: str,
-) -> tuple[msa.Msa, msa.Msa, templates.Templates]:
+) -> tuple[msa.Msa, msa.Msa, templates_lib.Templates]:
   """Processes a single protein chain."""
   logging.info('Getting protein MSAs for sequence %s', sequence)
   msa_start_time = time.time()
@@ -76,11 +117,8 @@ def _get_protein_msa_and_templates(
       sequence,
   )
 
-  logging.info(
-      'Deduplicating MSAs and getting protein templates for sequence %s',
-      sequence,
-  )
-  templates_start_time = time.time()
+  logging.info('Deduplicating MSAs for sequence %s', sequence)
+  msa_dedupe_start_time = time.time()
   with futures.ThreadPoolExecutor() as executor:
     unpaired_protein_msa_future = executor.submit(
         msa.Msa.from_multiple_msas,
@@ -90,43 +128,23 @@ def _get_protein_msa_and_templates(
     paired_protein_msa_future = executor.submit(
         msa.Msa.from_multiple_msas, msas=[uniprot_msa], deduplicate=False
     )
-    filter_config = templates_config.filter_config
-    templates_future = executor.submit(
-        templates.Templates.from_seq_and_a3m,
-        query_sequence=sequence,
-        msa_a3m=uniref90_msa.to_a3m(),
-        max_template_date=filter_config.max_template_date,
-        database_path=templates_config.template_tool_config.database_path,
-        hmmsearch_config=templates_config.template_tool_config.hmmsearch_config,
-        max_a3m_query_sequences=None,
-        chain_poly_type=mmcif_names.PROTEIN_CHAIN,
-        structure_store=structure_stores.StructureStore(pdb_database_path),
-    )
   unpaired_protein_msa = unpaired_protein_msa_future.result()
   paired_protein_msa = paired_protein_msa_future.result()
-  protein_templates = templates_future.result()
   logging.info(
-      'Deduplicating MSAs and getting protein templates took %.2f seconds for'
-      ' sequence %s',
-      time.time() - templates_start_time,
+      'Deduplicating MSAs took %.2f seconds for sequence %s',
+      time.time() - msa_dedupe_start_time,
       sequence,
   )
 
-  logging.info('Filtering protein templates for sequence %s', sequence)
-  filter_start_time = time.time()
-  filtered_templates = protein_templates.filter(
-      max_subsequence_ratio=filter_config.max_subsequence_ratio,
-      min_align_ratio=filter_config.min_align_ratio,
-      min_hit_length=filter_config.min_hit_length,
-      deduplicate_sequences=filter_config.deduplicate_sequences,
-      max_hits=filter_config.max_hits,
+  protein_templates = _get_protein_templates(
+      sequence=sequence,
+      input_msa_a3m=unpaired_protein_msa.to_a3m(),
+      run_template_search=run_template_search,
+      templates_config=templates_config,
+      pdb_database_path=pdb_database_path,
   )
-  logging.info(
-      'Filtering protein templates took %.2f seconds for sequence %s',
-      time.time() - filter_start_time,
-      sequence,
-  )
-  return unpaired_protein_msa, paired_protein_msa, filtered_templates
+
+  return unpaired_protein_msa, paired_protein_msa, protein_templates
 
 
 # Cache to avoid re-running the Nhmmer for the same sequence in homomers.
@@ -205,6 +223,7 @@ class DataPipelineConfig:
       template search.
     jackhmmer_n_cpu: Number of CPUs to use for Jackhmmer.
     nhmmer_n_cpu: Number of CPUs to use for Nhmmer.
+    max_template_date: The latest date of templates to use.
   """
 
   # Binary paths.
@@ -230,6 +249,8 @@ class DataPipelineConfig:
   # Optional configuration for MSA tools.
   jackhmmer_n_cpu: int = 8
   nhmmer_n_cpu: int = 8
+
+  max_template_date: datetime.date
 
 
 class DataPipeline:
@@ -378,8 +399,7 @@ class DataPipeline:
             min_hit_length=10,
             deduplicate_sequences=True,
             max_hits=4,
-            # By default, use the date from AF3 paper.
-            max_template_date=datetime.date(2021, 9, 30),
+            max_template_date=data_pipeline_config.max_template_date,
         ),
     )
     self._pdb_database_path = data_pipeline_config.pdb_database_path
@@ -388,12 +408,56 @@ class DataPipeline:
       self, chain: folding_input.ProteinChain
   ) -> folding_input.ProteinChain:
     """Processes a single protein chain."""
-    if chain.unpaired_msa or chain.paired_msa or chain.templates:
-      if (
-          chain.unpaired_msa is None
-          or chain.paired_msa is None
-          or chain.templates is None
-      ):
+    has_unpaired_msa = chain.unpaired_msa is not None
+    has_paired_msa = chain.paired_msa is not None
+    has_templates = chain.templates is not None
+
+    if not has_unpaired_msa and not has_paired_msa and not chain.templates:
+      # MSA None - search. Templates either [] - don't search, or None - search.
+      unpaired_msa, paired_msa, template_hits = _get_protein_msa_and_templates(
+          sequence=chain.sequence,
+          run_template_search=not has_templates,  # Skip template search if [].
+          uniref90_msa_config=self._uniref90_msa_config,
+          mgnify_msa_config=self._mgnify_msa_config,
+          small_bfd_msa_config=self._small_bfd_msa_config,
+          uniprot_msa_config=self._uniprot_msa_config,
+          templates_config=self._templates_config,
+          pdb_database_path=self._pdb_database_path,
+      )
+      unpaired_msa = unpaired_msa.to_a3m()
+      paired_msa = paired_msa.to_a3m()
+      templates = [
+          folding_input.Template(
+              mmcif=struc.to_mmcif(),
+              query_to_template_map=hit.query_to_hit_mapping,
+          )
+          for hit, struc in template_hits.get_hits_with_structures()
+      ]
+    elif has_unpaired_msa and has_paired_msa and not has_templates:
+      # Has MSA, but doesn't have templates. Search for templates only.
+      empty_msa = msa.Msa.from_empty(
+          query_sequence=chain.sequence,
+          chain_poly_type=mmcif_names.PROTEIN_CHAIN,
+      ).to_a3m()
+      unpaired_msa = chain.unpaired_msa or empty_msa
+      paired_msa = chain.paired_msa or empty_msa
+      template_hits = _get_protein_templates(
+          sequence=chain.sequence,
+          input_msa_a3m=unpaired_msa,
+          run_template_search=True,
+          templates_config=self._templates_config,
+          pdb_database_path=self._pdb_database_path,
+      )
+      templates = [
+          folding_input.Template(
+              mmcif=struc.to_mmcif(),
+              query_to_template_map=hit.query_to_hit_mapping,
+          )
+          for hit, struc in template_hits.get_hits_with_structures()
+      ]
+    else:
+      # Has MSA and templates, don't search for anything.
+      if not has_unpaired_msa or not has_paired_msa or not has_templates:
         raise ValueError(
             f'Protein chain {chain.id} has unpaired MSA, paired MSA, or'
             ' templates set only partially. If you want to run the pipeline'
@@ -406,50 +470,51 @@ class DataPipeline:
           'already has MSAs and templates.',
           chain.id,
       )
-      return chain
-
-    unpaired_msa, paired_msa, template_hits = _get_protein_msa_and_templates(
-        sequence=chain.sequence,
-        uniref90_msa_config=self._uniref90_msa_config,
-        mgnify_msa_config=self._mgnify_msa_config,
-        small_bfd_msa_config=self._small_bfd_msa_config,
-        uniprot_msa_config=self._uniprot_msa_config,
-        templates_config=self._templates_config,
-        pdb_database_path=self._pdb_database_path,
-    )
+      if not chain.unpaired_msa:
+        logging.info('Using empty unpaired MSA for protein chain %s', chain.id)
+      if not chain.paired_msa:
+        logging.info('Using empty paired MSA for protein chain %s', chain.id)
+      if not chain.templates:
+        logging.info('Using no templates for protein chain %s', chain.id)
+      empty_msa = msa.Msa.from_empty(
+          query_sequence=chain.sequence,
+          chain_poly_type=mmcif_names.PROTEIN_CHAIN,
+      ).to_a3m()
+      unpaired_msa = chain.unpaired_msa or empty_msa
+      paired_msa = chain.paired_msa or empty_msa
+      templates = chain.templates
 
     return dataclasses.replace(
         chain,
-        unpaired_msa=unpaired_msa.to_a3m(),
-        paired_msa=paired_msa.to_a3m(),
-        templates=[
-            folding_input.Template(
-                mmcif=struc.to_mmcif(),
-                query_to_template_map=hit.query_to_hit_mapping,
-            )
-            for hit, struc in template_hits.get_hits_with_structures()
-        ],
+        unpaired_msa=unpaired_msa,
+        paired_msa=paired_msa,
+        templates=templates,
     )
 
   def process_rna_chain(
       self, chain: folding_input.RnaChain
   ) -> folding_input.RnaChain:
     """Processes a single RNA chain."""
-    if chain.unpaired_msa:
+    if chain.unpaired_msa is not None:
       # Don't run MSA tools if the chain already has an MSA.
       logging.info(
           'Skipping MSA search for RNA chain %s because it already has MSA.',
           chain.id,
       )
-      return chain
-
-    rna_msa = _get_rna_msa(
-        sequence=chain.sequence,
-        nt_rna_msa_config=self._nt_rna_msa_config,
-        rfam_msa_config=self._rfam_msa_config,
-        rnacentral_msa_config=self._rnacentral_msa_config,
-    )
-    return dataclasses.replace(chain, unpaired_msa=rna_msa.to_a3m())
+      if not chain.unpaired_msa:
+        logging.info('Using empty unpaired MSA for RNA chain %s', chain.id)
+      empty_msa = msa.Msa.from_empty(
+          query_sequence=chain.sequence, chain_poly_type=mmcif_names.RNA_CHAIN
+      ).to_a3m()
+      unpaired_msa = chain.unpaired_msa or empty_msa
+    else:
+      unpaired_msa = _get_rna_msa(
+          sequence=chain.sequence,
+          nt_rna_msa_config=self._nt_rna_msa_config,
+          rfam_msa_config=self._rfam_msa_config,
+          rnacentral_msa_config=self._rnacentral_msa_config,
+      ).to_a3m()
+    return dataclasses.replace(chain, unpaired_msa=unpaired_msa)
 
   def process(self, fold_input: folding_input.Input) -> folding_input.Input:
     """Runs MSA and template tools and returns a new Input with the results."""

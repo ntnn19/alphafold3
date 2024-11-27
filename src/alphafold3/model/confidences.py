@@ -9,6 +9,8 @@
 # https://github.com/google-deepmind/alphafold3/blob/main/WEIGHTS_TERMS_OF_USE.md
 
 """Functions for extracting and processing confidences from model outputs."""
+import warnings
+
 from absl import logging
 from alphafold3 import structure
 from alphafold3.constants import residue_names
@@ -321,7 +323,7 @@ def chain_pair_pde(
 def weighted_nanmean(
     value: np.ndarray, mask: np.ndarray, axis: int
 ) -> np.ndarray:
-  """Nan-mean with weighting -- Empty slices return NaN."""
+  """Nan-mean with weighting -- empty slices return NaN."""
   assert mask.shape == value.shape
   assert not np.isnan(mask).all()
 
@@ -329,9 +331,12 @@ def weighted_nanmean(
   # Need to NaN the mask to get the correct denominator weighting.
   mask_with_nan = mask.copy()
   mask_with_nan[nan_idxs] = np.nan
-  return np.nanmean(value * mask_with_nan, axis=axis) / np.nanmean(
-      mask_with_nan, axis=axis
-  )
+  with warnings.catch_warnings():
+    # Mean of empty slice is ok and should return a NaN.
+    warnings.filterwarnings(action='ignore', message='Mean of empty slice')
+    return np.nanmean(value * mask_with_nan, axis=axis) / np.nanmean(
+        mask_with_nan, axis=axis
+    )
 
 
 def chain_pair_pae(
@@ -453,10 +458,11 @@ def reduce_chain_pair(
     weight *= chain_weight[None] * chain_weight[:, None]
     xchain = weighted_nanmean(chain_pair_met, mask=weight, axis=agg_axis)
   elif agg_type == 'min':
-    is_self = np.eye(
-        num_chains,
-    )
-    xchain = np.nanmin(chain_pair_met + 1e8 * is_self, axis=agg_axis)
+    is_self = np.eye(num_chains)
+    with warnings.catch_warnings():
+      # Min over empty slice is ok and should return a NaN.
+      warnings.filterwarnings('ignore', message='All-NaN slice encountered')
+      xchain = np.nanmin(chain_pair_met + 1e8 * is_self, axis=agg_axis)
   else:
     raise ValueError(f'Unknown aggregation method: {agg_type}')
 
@@ -519,9 +525,12 @@ def pae_metrics(
 
     ichain, xchain_row_agg = inner(False)
     _, xchain_col_agg = inner(True)
-    xchain = np.nanmean(
-        np.stack([xchain_row_agg, xchain_col_agg], axis=0), axis=0
-    )
+    with warnings.catch_warnings():
+      # Mean of empty slice is ok and should return a NaN.
+      warnings.filterwarnings(action='ignore', message='Mean of empty slice')
+      xchain = np.nanmean(
+          np.stack([xchain_row_agg, xchain_col_agg], axis=0), axis=0
+      )
     return ichain, xchain
 
   pae_ichain, pae_xchain = reduce_chain_pair_fn(chain_pair_contact_weighted)
@@ -545,7 +554,13 @@ def get_iptm_xchain(chain_pair_iptm: np.ndarray) -> np.ndarray:
   weight -= np.eye(num_chains, dtype=float)
   xchain_row_agg = weighted_nanmean(chain_pair_iptm, mask=weight, axis=-2)
   xchain_col_agg = weighted_nanmean(chain_pair_iptm, mask=weight, axis=-1)
-  return np.nanmean(np.stack([xchain_row_agg, xchain_col_agg], axis=0), axis=0)
+  with warnings.catch_warnings():
+    # Mean of empty slice is ok and should return a NaN.
+    warnings.filterwarnings(action='ignore', message='Mean of empty slice')
+    iptm_xchain = np.nanmean(
+        np.stack([xchain_row_agg, xchain_col_agg], axis=0), axis=0
+    )
+  return iptm_xchain
 
 
 def predicted_tm_score(
