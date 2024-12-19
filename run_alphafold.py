@@ -199,6 +199,13 @@ _MAX_TEMPLATE_DATE = flags.DEFINE_string(
     'templates released after this date will be ignored.',
 )
 
+_CONFORMER_MAX_ITERATIONS = flags.DEFINE_integer(
+    'conformer_max_iterations',
+    None,  # Default to RDKit default parameters value.
+    'Optional override for maximum number of iterations to run for RDKit '
+    'conformer search.',
+)
+
 # JAX inference performance tuning.
 _JAX_COMPILATION_CACHE_DIR = flags.DEFINE_string(
     'jax_compilation_cache_dir',
@@ -228,6 +235,11 @@ _FLASH_ATTENTION_IMPLEMENTATION = flags.DEFINE_enum(
         ' across GPU devices.'
     ),
 )
+_NUM_DIFFUSION_SAMPLES = flags.DEFINE_integer(
+    'num_diffusion_samples',
+    5,
+    'Number of diffusion samples to generate.',
+)
 
 
 class ConfigurableModel(Protocol):
@@ -256,12 +268,16 @@ def make_model_config(
     *,
     model_class: type[ModelT] = diffusion_model.Diffuser,
     flash_attention_implementation: attention.Implementation = 'triton',
+    num_diffusion_samples: int = 5,
 ):
+  """Returns a model config with some defaults overridden."""
   config = model_class.Config()
   if hasattr(config, 'global_config'):
     config.global_config.flash_attention_implementation = (
         flash_attention_implementation
     )
+  if hasattr(config, 'heads'):
+    config.heads.diffusion.eval.num_samples = num_diffusion_samples
   return config
 
 
@@ -356,6 +372,7 @@ def predict_structure(
     fold_input: folding_input.Input,
     model_runner: ModelRunner,
     buckets: Sequence[int] | None = None,
+    conformer_max_iterations: int | None = None,
 ) -> Sequence[ResultsForSeed]:
   """Runs the full inference pipeline to predict structures for each seed."""
 
@@ -363,7 +380,11 @@ def predict_structure(
   featurisation_start_time = time.time()
   ccd = chemical_components.cached_ccd(user_ccd=fold_input.user_ccd)
   featurised_examples = featurisation.featurise_input(
-      fold_input=fold_input, buckets=buckets, ccd=ccd, verbose=True
+      fold_input=fold_input,
+      buckets=buckets,
+      ccd=ccd,
+      verbose=True,
+      conformer_max_iterations=conformer_max_iterations,
   )
   print(
       f'Featurising data for seeds {fold_input.rng_seeds} took '
@@ -398,11 +419,11 @@ def predict_structure(
     )
     print(
         'Running model inference and extracting output structures for seed'
-        f' {seed} took  {time.time() - inference_start_time:.2f} seconds.'
+        f' {seed} took {time.time() - inference_start_time:.2f} seconds.'
     )
   print(
       'Running model inference and extracting output structures for seeds'
-      f' {fold_input.rng_seeds} took '
+      f' {fold_input.rng_seeds} took'
       f' {time.time() - all_inference_start_time:.2f} seconds.'
   )
   return all_inference_results
@@ -509,6 +530,7 @@ def process_fold_input(
     model_runner: ModelRunner | None,
     output_dir: os.PathLike[str] | str,
     buckets: Sequence[int] | None = None,
+    conformer_max_iterations: int | None = None,
 ) -> folding_input.Input | Sequence[ResultsForSeed]:
   """Runs data pipeline and/or inference on a single fold input.
 
@@ -523,6 +545,8 @@ def process_fold_input(
       number of tokens. If not None, must be a sequence of at least one integer,
       in strictly increasing order. Will raise an error if the number of tokens
       is more than the largest bucket size.
+    conformer_max_iterations: Optional override for maximum number of iterations
+      to run for RDKit conformer search.
 
   Returns:
     The processed fold input, or the inference results for each seed.
@@ -572,6 +596,7 @@ def process_fold_input(
         fold_input=fold_input,
         model_runner=model_runner,
         buckets=buckets,
+        conformer_max_iterations=conformer_max_iterations,
     )
     print(
         f'Writing outputs for {fold_input.name} for seed(s)'
@@ -628,13 +653,22 @@ def main(_):
   if _RUN_INFERENCE.value:
     # Fail early on incompatible devices, but only if we're running inference.
     gpu_devices = jax.local_devices(backend='gpu')
-    if gpu_devices and float(gpu_devices[0].compute_capability) < 8.0:
-      raise ValueError(
-          'There are currently known unresolved numerical issues with using'
-          ' devices with compute capability less than 8.0. See '
-          ' https://github.com/google-deepmind/alphafold3/issues/59 for'
-          ' tracking.'
-      )
+    if gpu_devices:
+      compute_capability = float(gpu_devices[0].compute_capability)
+      if compute_capability < 6.0:
+        raise ValueError(
+            'AlphaFold 3 requires at least GPU compute capability 6.0 (see'
+            ' https://developer.nvidia.com/cuda-gpus).'
+        )
+      elif 7.0 <= compute_capability < 8.0:
+        xla_flags = os.environ.get('XLA_FLAGS')
+        required_flag = '--xla_disable_hlo_passes=custom-kernel-fusion-rewriter'
+        if not xla_flags or required_flag not in xla_flags:
+          raise ValueError(
+              'For devices with GPU compute capability 7.x (see'
+              ' https://developer.nvidia.com/cuda-gpus) the ENV XLA_FLAGS must'
+              f' include "{required_flag}".'
+          )
 
   notice = textwrap.wrap(
       'Running AlphaFold 3. Please note that standard AlphaFold 3 model'
@@ -687,7 +721,8 @@ def main(_):
         config=make_model_config(
             flash_attention_implementation=typing.cast(
                 attention.Implementation, _FLASH_ATTENTION_IMPLEMENTATION.value
-            )
+            ),
+            num_diffusion_samples=_NUM_DIFFUSION_SAMPLES.value,
         ),
         device=devices[0],
         model_dir=pathlib.Path(MODEL_DIR.value),
@@ -696,17 +731,21 @@ def main(_):
     print('Skipping running model inference.')
     model_runner = None
 
-  print(f'Processing {len(fold_inputs)} fold inputs.')
+  print('Processing fold inputs.')
+  num_fold_inputs = 0
   for fold_input in fold_inputs:
+    print(f'Processing fold input #{num_fold_inputs + 1}')
     process_fold_input(
         fold_input=fold_input,
         data_pipeline_config=data_pipeline_config,
         model_runner=model_runner,
         output_dir=os.path.join(_OUTPUT_DIR.value, fold_input.sanitised_name()),
         buckets=tuple(int(bucket) for bucket in _BUCKETS.value),
+        conformer_max_iterations=_CONFORMER_MAX_ITERATIONS.value,
     )
+    num_fold_inputs += 1
 
-  print(f'Done processing {len(fold_inputs)} fold inputs.')
+  print(f'Done processing {num_fold_inputs} fold inputs.')
 
 
 if __name__ == '__main__':

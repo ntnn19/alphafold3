@@ -17,6 +17,7 @@ from absl import logging
 from alphafold3.cpp import cif_dict
 import numpy as np
 import rdkit.Chem as rd_chem
+from rdkit.Chem import AllChem as rd_all_chem
 
 
 _RDKIT_MMCIF_TO_BOND_TYPE: Mapping[str, rd_chem.BondType] = {
@@ -484,13 +485,13 @@ def assign_atom_names_from_graph(
   keep_existing_names is True we keep the original name.
 
   We traverse the graph in the order of the rdkit atom index and give each atom
-  a name equal to '{ELEMENT_TYPE}_{INDEX}'. E.g. C5 is the name for the fifth
+  a name equal to '{ELEMENT_TYPE}{INDEX}'. E.g. C5 is the name for the fifth
   unnamed carbon encountered.
 
   NOTE: A new mol is returned, the original is not changed in place.
 
   Args:
-    mol:
+    mol: Mol object.
     keep_existing_names: If True, atoms that already have the atom_name property
       will keep their assigned names.
 
@@ -511,9 +512,32 @@ def assign_atom_names_from_graph(
       element = atom.GetSymbol()
       while True:
         element_counts[element] += 1
-        new_name = f'{element}{element_counts[element]}'
+        # Standardize names by using uppercase element type, as in CCD. Only
+        # effects elements with more than one letter, e.g. 'Cl' becomes 'CL'.
+        new_name = f'{element.upper()}{element_counts[element]}'
         if new_name not in specified_atom_names:
           break
       atom.SetProp('atom_name', new_name)
 
   return mol
+
+
+def get_random_conformer(
+    mol: rd_chem.Mol,
+    random_seed: int,
+    max_iterations: int | None,
+    logging_name: str,
+) -> rd_chem.Conformer | None:
+  """Stochastic conformer search method using V3 ETK."""
+  params = rd_all_chem.ETKDGv3()
+  params.randomSeed = random_seed
+  if max_iterations is not None:  # Override default value.
+    params.maxIterations = max_iterations
+  mol_copy = rd_chem.Mol(mol)
+  try:
+    conformer_id = rd_all_chem.EmbedMolecule(mol_copy, params)
+    conformer = mol_copy.GetConformer(conformer_id)
+  except ValueError:
+    logging.warning('Failed to generate conformer for: %s', logging_name)
+    conformer = None
+  return conformer
