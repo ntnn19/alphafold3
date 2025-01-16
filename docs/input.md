@@ -833,8 +833,8 @@ to the model, but they are necessary for the data pipeline to run – see the
 *   `_chem_comp_atom.atom_id`: Atom ID.
 *   `_chem_comp_atom.type_symbol`: Atom element type.
 *   `_chem_comp_atom.charge`: Atom charge.
-*   `_chem_comp_atom.pdbx_leaving_atom_flag`: Flag determining whether this is a
-    leaving atom.
+*   `_chem_comp_atom.pdbx_leaving_atom_flag`: Optional flag determining whether
+    this is a leaving atom. If unset, assumed to be no (`N`) for all atoms.
 *   `_chem_comp_atom.pdbx_model_Cartn_x_ideal`: Ideal x coordinate.
 *   `_chem_comp_atom.pdbx_model_Cartn_y_ideal`: Ideal y coordinate.
 *   `_chem_comp_atom.pdbx_model_Cartn_z_ideal`: Ideal z coordinate.
@@ -943,9 +943,8 @@ certain fields and the sequences are not biologically meaningful.
     }
   ],
   "bondedAtomPairs": [
-    [["A", 1, "CA"], ["B", 1, "CA"]],
     [["A", 1, "CA"], ["G", 1, "CHA"]],
-    [["J", 1, "O6"], ["J", 2, "C1"]]
+    [["I", 1, "O6"], ["I", 2, "C1"]]
   ],
   "userCCD": ...,
   "dialect": "alphafold3",

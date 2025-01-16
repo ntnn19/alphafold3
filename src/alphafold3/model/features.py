@@ -489,7 +489,7 @@ class MSA:
 
         paired_msa = msa_module.Msa.from_a3m(
             query_sequence=sequence,
-            chain_poly_type=mmcif_names.PROTEIN_CHAIN,
+            chain_poly_type=chain_type,
             a3m=paired_a3m,
             deduplicate=False,
         )
