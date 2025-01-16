@@ -770,7 +770,6 @@ def _validate_user_ccd_keys(keys: Sequence[str]) -> None:
       '_chem_comp_atom.atom_id',
       '_chem_comp_atom.type_symbol',
       '_chem_comp_atom.charge',
-      '_chem_comp_atom.pdbx_leaving_atom_flag',
       '_chem_comp_atom.pdbx_model_Cartn_x_ideal',
       '_chem_comp_atom.pdbx_model_Cartn_y_ideal',
       '_chem_comp_atom.pdbx_model_Cartn_z_ideal',
@@ -854,6 +853,12 @@ class Input:
   @property
   def ligands(self) -> Sequence[Ligand]:
     return [chain for chain in self.chains if isinstance(chain, Ligand)]
+
+  def sanitised_name(self) -> str:
+    """Returns sanitised version of the name that can be used as a filename."""
+    lower_spaceless_name = self.name.lower().replace(' ', '_')
+    allowed_chars = set(string.ascii_lowercase + string.digits + '_-.')
+    return ''.join(l for l in lower_spaceless_name if l in allowed_chars)
 
   @classmethod
   def from_alphafoldserver_fold_job(cls, fold_job: Mapping[str, Any]) -> Self:
@@ -1306,11 +1311,17 @@ class Input:
     ]
     return dataclasses.replace(self, chains=with_missing_fields)
 
-  def sanitised_name(self) -> str:
-    """Returns sanitised version of the name that can be used as a filename."""
-    lower_spaceless_name = self.name.lower().replace(' ', '_')
-    allowed_chars = set(string.ascii_lowercase + string.digits + '_-.')
-    return ''.join(l for l in lower_spaceless_name if l in allowed_chars)
+  def with_multiple_seeds(self, num_seeds: int) -> Self:
+    """Returns a copy of the input with num_seeds rng seeds."""
+    if num_seeds <= 1:
+      raise ValueError('Number of seeds must be greater than 1.')
+    if len(self.rng_seeds) != 1:
+      raise ValueError('Input must have one rng seed to set multiple seeds.')
+
+    return dataclasses.replace(
+        self,
+        rng_seeds=list(range(self.rng_seeds[0], self.rng_seeds[0] + num_seeds)),
+    )
 
 
 def load_fold_inputs_from_path(json_path: pathlib.Path) -> Iterator[Input]:
@@ -1329,8 +1340,8 @@ def load_fold_inputs_from_path(json_path: pathlib.Path) -> Iterator[Input]:
         yield Input.from_alphafoldserver_fold_job(fold_job)
       except ValueError as e:
         raise ValueError(
-            f'Failed to load fold job {fold_job_idx} from {json_path}. The JSON'
-            ' was detected to be the AlphaFold Server dialect.'
+            f'Failed to load fold job {fold_job_idx} from {json_path}'
+            f' (AlphaFold Server dialect): {e}'
         ) from e
   else:
     # AlphaFold 3 JSON.
@@ -1338,8 +1349,7 @@ def load_fold_inputs_from_path(json_path: pathlib.Path) -> Iterator[Input]:
       yield Input.from_json(json_str, json_path)
     except ValueError as e:
       raise ValueError(
-          f'Failed to load fold input from {json_path}. The JSON was detected'
-          ' to be the AlphaFold 3 dialect.'
+          f'Failed to load input from {json_path} (AlphaFold 3 dialect): {e}'
       ) from e
 
 

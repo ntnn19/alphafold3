@@ -44,10 +44,10 @@ from alphafold3.data import featurisation
 from alphafold3.data import pipeline
 from alphafold3.jax.attention import attention
 from alphafold3.model import features
+from alphafold3.model import model
 from alphafold3.model import params
 from alphafold3.model import post_processing
 from alphafold3.model.components import utils
-from alphafold3.model.diffusion import model
 import haiku as hk
 import jax
 from jax import numpy as jnp
@@ -210,6 +210,13 @@ _JAX_COMPILATION_CACHE_DIR = flags.DEFINE_string(
     None,
     'Path to a directory for the JAX compilation cache.',
 )
+_GPU_DEVICE = flags.DEFINE_integer(
+    'gpu_device',
+    0,
+    'Optional override for the GPU device to use for inference. Defaults to the'
+    ' 1st GPU on the system. Useful on multi-GPU systems to pin each run to a'
+    ' specific GPU.',
+)
 _BUCKETS = flags.DEFINE_list(
     'buckets',
     # pyformat: disable
@@ -233,10 +240,28 @@ _FLASH_ATTENTION_IMPLEMENTATION = flags.DEFINE_enum(
         ' across GPU devices.'
     ),
 )
+_NUM_RECYCLES = flags.DEFINE_integer(
+    'num_recycles',
+    10,
+    'Number of recycles to use during inference.',
+    lower_bound=1,
+)
 _NUM_DIFFUSION_SAMPLES = flags.DEFINE_integer(
     'num_diffusion_samples',
     5,
     'Number of diffusion samples to generate.',
+    lower_bound=1,
+)
+_NUM_SEEDS = flags.DEFINE_integer(
+    'num_seeds',
+    None,
+    'Number of seeds to use for inference. If set, only a single seed must be'
+    ' provided in the input JSON. AlphaFold 3 will then generate random seeds'
+    ' in sequence, starting from the single seed specified in the input JSON.'
+    ' The full input JSON produced by AlphaFold 3 will include the generated'
+    ' random seeds. If not set, AlphaFold 3 will use the seeds as provided in'
+    ' the input JSON.',
+    lower_bound=1,
 )
 
 # Output controls.
@@ -251,14 +276,16 @@ def make_model_config(
     *,
     flash_attention_implementation: attention.Implementation = 'triton',
     num_diffusion_samples: int = 5,
+    num_recycles: int = 10,
     return_embeddings: bool = False,
-) -> model.Diffuser.Config:
+) -> model.Model.Config:
   """Returns a model config with some defaults overridden."""
-  config = model.Diffuser.Config()
+  config = model.Model.Config()
   config.global_config.flash_attention_implementation = (
       flash_attention_implementation
   )
   config.heads.diffusion.eval.num_samples = num_diffusion_samples
+  config.num_recycles = num_recycles
   config.return_embeddings = return_embeddings
   return config
 
@@ -268,7 +295,7 @@ class ModelRunner:
 
   def __init__(
       self,
-      config: model.Diffuser.Config,
+      config: model.Model.Config,
       device: jax.Device,
       model_dir: pathlib.Path,
   ):
@@ -289,7 +316,7 @@ class ModelRunner:
 
     @hk.transform
     def forward_fn(batch):
-      return model.Diffuser(self._model_config)(batch)
+      return model.Model(self._model_config)(batch)
 
     return functools.partial(
         jax.jit(forward_fn.apply, device=self._device), self.model_params
@@ -325,7 +352,7 @@ class ModelRunner:
   ) -> list[model.InferenceResult]:
     """Generates structures from model outputs."""
     return list(
-        model.Diffuser.get_inference_result(
+        model.Model.get_inference_result(
             batch=batch, result=result, target_name=target_name
         )
     )
@@ -658,7 +685,9 @@ def main(_):
     # Fail early on incompatible devices, but only if we're running inference.
     gpu_devices = jax.local_devices(backend='gpu')
     if gpu_devices:
-      compute_capability = float(gpu_devices[0].compute_capability)
+      compute_capability = float(
+          gpu_devices[_GPU_DEVICE.value].compute_capability
+      )
       if compute_capability < 6.0:
         raise ValueError(
             'AlphaFold 3 requires at least GPU compute capability 6.0 (see'
@@ -672,6 +701,12 @@ def main(_):
               'For devices with GPU compute capability 7.x (see'
               ' https://developer.nvidia.com/cuda-gpus) the ENV XLA_FLAGS must'
               f' include "{required_flag}".'
+          )
+        if _FLASH_ATTENTION_IMPLEMENTATION.value != 'xla':
+          raise ValueError(
+              'For devices with GPU compute capability 7.x (see'
+              ' https://developer.nvidia.com/cuda-gpus) the'
+              ' --flash_attention_implementation must be set to "xla".'
           )
 
   notice = textwrap.wrap(
@@ -717,7 +752,10 @@ def main(_):
 
   if _RUN_INFERENCE.value:
     devices = jax.local_devices(backend='gpu')
-    print(f'Found local devices: {devices}')
+    print(
+        f'Found local devices: {devices}, using device {_GPU_DEVICE.value}:'
+        f' {devices[_GPU_DEVICE.value]}'
+    )
 
     print('Building model from scratch...')
     model_runner = ModelRunner(
@@ -726,9 +764,10 @@ def main(_):
                 attention.Implementation, _FLASH_ATTENTION_IMPLEMENTATION.value
             ),
             num_diffusion_samples=_NUM_DIFFUSION_SAMPLES.value,
+            num_recycles=_NUM_RECYCLES.value,
             return_embeddings=_SAVE_EMBEDDINGS.value,
         ),
-        device=devices[0],
+        device=devices[_GPU_DEVICE.value],
         model_dir=pathlib.Path(MODEL_DIR.value),
     )
   else:
@@ -739,6 +778,11 @@ def main(_):
   num_fold_inputs = 0
   for fold_input in fold_inputs:
     print(f'Processing fold input #{num_fold_inputs + 1}')
+    if _NUM_SEEDS.value is not None:
+      print(
+          f'Expanding fold input {fold_input.name} to {_NUM_SEEDS.value} seeds'
+      )
+      fold_input = fold_input.with_multiple_seeds(_NUM_SEEDS.value)
     process_fold_input(
         fold_input=fold_input,
         data_pipeline_config=data_pipeline_config,

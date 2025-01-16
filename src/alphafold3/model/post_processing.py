@@ -17,7 +17,7 @@ import os
 from alphafold3 import version
 from alphafold3.model import confidence_types
 from alphafold3.model import mmcif_metadata
-from alphafold3.model.diffusion import model
+from alphafold3.model import model
 import numpy as np
 
 
@@ -120,4 +120,4 @@ def write_embeddings(
   """Writes embeddings to a directory."""
 
   with open(os.path.join(output_dir, 'embeddings.npz'), 'wb') as f:
-    np.savez_compressed(f, allow_pickle=False, **embeddings)
+    np.savez_compressed(f, **embeddings)

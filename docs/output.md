@@ -5,6 +5,8 @@
 For every input job, AlphaFold 3 writes all its outputs in a directory called by
 the sanitized version of the job name. E.g. for job name "My first fold (test)",
 AlphaFold 3 will write its outputs in a directory called `my_first_fold_test`.
+If such directory already exists, AlphaFold 3 will append a timestamp to the
+directory name to avoid overwriting existing data.
 
 The following structure is used within the output directory:
 
@@ -13,6 +15,8 @@ The following structure is used within the output directory:
     `seed-<seed value>_sample-<sample number>`. Each of these directories
     contains a confidence JSON, summary confidence JSON, and the mmCIF with the
     predicted structure.
+*   Embeddings for each seed: `seed-<seed value>_embeddings/embeddings.npz`.
+    Only saved if AlphaFold 3 is run with `--save_embeddings=true`.
 *   Top-ranking prediction mmCIF: `<job_name>_model.cif`. This file contains the
     predicted coordinates and should be compatible with most structural biology
     tools. We do not provide the output in the PDB format, the CIF file can be
@@ -26,11 +30,13 @@ The following structure is used within the output directory:
     with highest ranking is the one included in the root directory.
 *   Output terms of use: `TERMS_OF_USE.md`.
 
-Below is an example AlphaFold 3 output directory listing for a job called
-"Hello Fold", that has been ran with 1 seed and 5 samples:
+Below is an example AlphaFold 3 output directory listing for a job called "Hello
+Fold", that has been ran with 1 seed and 5 samples:
 
 ```text
 hello_fold/
+├── seed-1234_embeddings          # Only saved when --save_embeddings=true.
+│   └── embeddings.npz            # Only saved when --save_embeddings=true.
 ├── seed-1234_sample-0/
 │   ├── confidences.json
 │   ├── model.cif
@@ -185,3 +191,27 @@ Full array outputs:
     corresponding to each token in the prediction.
 *   `atom_chain_ids`: A \[num_atoms\] array indicating the chain ids
     corresponding to each atom in the prediction.
+
+## Embeddings
+
+AlphaFold 3 can be run with `--save_embeddings=true` to save the embeddings for
+each seed. The file is in the
+[compressed Numpy `.npz` format](https://numpy.org/doc/stable/reference/generated/numpy.savez_compressed.html)
+and can be loaded using `numpy.load` as a dictionary-like object with two
+arrays:
+
+*   `single_embeddings`: A \`[num\_tokens, 384\] array containing the embeddings
+    for each token.
+*   `pair_embeddings`: A \[num\_tokens, num\_tokens, 128\] array containing the
+    pairwise embeddings between all tokens.
+
+You can use for instance the following Python code to load the embeddings:
+
+```py
+import numpy as np
+
+with open('embeddings.npz', 'rb') as f:
+  embeddings = np.load(f)
+  single_embeddings = embeddings['single_embeddings']
+  pair_embeddings = embeddings['pair_embeddings']
+```

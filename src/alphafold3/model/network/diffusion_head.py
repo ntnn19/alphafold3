@@ -17,9 +17,9 @@ from alphafold3.model import feat_batch
 from alphafold3.model import model_config
 from alphafold3.model.components import haiku_modules as hm
 from alphafold3.model.components import utils
-from alphafold3.model.diffusion import atom_cross_attention
-from alphafold3.model.diffusion import diffusion_transformer
-from alphafold3.model.diffusion import featurization
+from alphafold3.model.network import atom_cross_attention
+from alphafold3.model.network import diffusion_transformer
+from alphafold3.model.network import featurization
 import chex
 import haiku as hk
 import jax
