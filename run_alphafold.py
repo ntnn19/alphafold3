@@ -344,30 +344,27 @@ class ModelRunner:
     result['__identifier__'] = identifier
     return result
 
-  def extract_structures(
+  def extract_inference_results_and_maybe_embeddings(
       self,
       batch: features.BatchDict,
       result: model.ModelResult,
       target_name: str,
-  ) -> list[model.InferenceResult]:
-    """Generates structures from model outputs."""
-    return list(
+  ) -> tuple[list[model.InferenceResult], dict[str, np.ndarray] | None]:
+    """Extracts inference results and embeddings (if set) from model outputs."""
+    inference_results = list(
         model.Model.get_inference_result(
             batch=batch, result=result, target_name=target_name
         )
     )
-
-  def extract_embeddings(
-      self,
-      result: model.ModelResult,
-  ) -> dict[str, np.ndarray] | None:
-    """Extracts embeddings from model outputs."""
+    num_tokens = len(inference_results[0].metadata['token_chain_ids'])
     embeddings = {}
     if 'single_embeddings' in result:
-      embeddings['single_embeddings'] = result['single_embeddings']
+      embeddings['single_embeddings'] = result['single_embeddings'][:num_tokens]
     if 'pair_embeddings' in result:
-      embeddings['pair_embeddings'] = result['pair_embeddings']
-    return embeddings or None
+      embeddings['pair_embeddings'] = result['pair_embeddings'][
+          :num_tokens, :num_tokens
+      ]
+    return inference_results, embeddings or None
 
 
 @dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
@@ -425,17 +422,17 @@ def predict_structure(
         f'Running model inference with seed {seed} took'
         f' {time.time() - inference_start_time:.2f} seconds.'
     )
-    print(f'Extracting output structure samples with seed {seed}...')
+    print(f'Extracting inference results with seed {seed}...')
     extract_structures = time.time()
-    inference_results = model_runner.extract_structures(
-        batch=example, result=result, target_name=fold_input.name
+    inference_results, embeddings = (
+        model_runner.extract_inference_results_and_maybe_embeddings(
+            batch=example, result=result, target_name=fold_input.name
+        )
     )
     print(
-        f'Extracting {len(inference_results)} output structure samples with'
+        f'Extracting {len(inference_results)} inference samples with'
         f' seed {seed} took {time.time() - extract_structures:.2f} seconds.'
     )
-
-    embeddings = model_runner.extract_embeddings(result)
 
     all_inference_results.append(
         ResultsForSeed(
