@@ -25,11 +25,11 @@ class GlobalConfig(base_config.BaseConfig):
   final_init: Literal['zeros', 'linear'] = 'zeros'
   pair_attention_chunk_size: Sequence[_Shape2DType] = ((1536, 128), (None, 32))
 # A/H100 40GB
-#  pair_transition_shard_spec: Sequence[_Shape2DType] = ((2048, None),(3072, 1024),(None, 512),)
+  pair_transition_shard_spec: Sequence[_Shape2DType] = ((2048, None),(3072, 1024),(None, 512),)
 # A/H100 80GB
-  pair_transition_shard_spec: Sequence[_Shape2DType] = (
-      (2048, None),
-      (None, 1024),
-  )
+#  pair_transition_shard_spec: Sequence[_Shape2DType] = (
+#      (2048, None),
+#      (None, 1024),
+#  )
   # Note: flash_attention_implementation = 'xla' means no flash attention.
   flash_attention_implementation: attention.Implementation = 'triton'
