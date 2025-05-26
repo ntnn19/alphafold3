@@ -144,7 +144,6 @@ def _compute_asym_entity_and_sym_id(
       asym_ids.append(asym_id)
       entity_ids.append(entity_id)
       sym_ids.append(sym_id)
-
   return Chains(
       chain_id=np.array(chain_ids),
       asym_id=np.array(asym_ids),
@@ -706,6 +705,7 @@ class Templates:
       fold_input: folding_input.Input,
       max_templates: int,
       logging_name: str,
+      separate_homomer_templates: bool = False,
   ) -> Self:
     """Compute the template features."""
 
@@ -740,7 +740,7 @@ class Templates:
           or chain_id not in nonempty_chain_ids
       )
 
-      if three_letter_sequence in seen_entities:
+      if three_letter_sequence in seen_entities and not separate_homomer_templates:
         entity_id = seen_entities[three_letter_sequence]
       else:
         entity_id = len(seen_entities) + 1

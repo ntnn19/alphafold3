@@ -152,6 +152,7 @@ class WholePdbPipeline:
       random_state: np.random.RandomState,
       ccd: chemical_components.Ccd,
       random_seed: int | None = None,
+      separate_homomer_templates: bool = False,
   ) -> features.BatchDict:
     """Takes requests from in_queue, adds (key, serialized ex) to out_queue."""
     if random_seed is None:
@@ -345,6 +346,7 @@ class WholePdbPipeline:
         fold_input=fold_input,
         max_templates=self._config.max_templates,
         logging_name=logging_name,
+        separate_homomer_templates=separate_homomer_templates,
     )
 
     ref_max_modified_date = self._config.max_template_date

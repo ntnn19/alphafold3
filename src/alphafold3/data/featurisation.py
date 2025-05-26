@@ -41,6 +41,7 @@ def featurise_input(
     buckets: Sequence[int] | None,
     max_template_date: datetime.date | None = None,
     verbose: bool = False,
+    separate_homomer_templates: bool = False,
 ) -> Sequence[features.BatchDict]:
   """Featurise the folding input.
 
@@ -78,6 +79,7 @@ def featurise_input(
         ccd=ccd,
         random_state=np.random.RandomState(rng_seed),
         random_seed=rng_seed,
+        separate_homomer_templates=separate_homomer_templates,
     )
     if verbose:
       print(

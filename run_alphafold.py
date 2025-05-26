@@ -199,6 +199,12 @@ _MAX_TEMPLATE_DATE = flags.DEFINE_string(
     'templates released after this date will be ignored.',
 )
 
+_CROSS_CHAIN_TEMPLATES = flags.DEFINE_boolean(
+  'cross_chain_templates',
+  False,
+  'Whether to include cross-chain distances in multimer templates',
+)
+
 # JAX inference performance tuning.
 _JAX_COMPILATION_CACHE_DIR = flags.DEFINE_string(
     'jax_compilation_cache_dir',
@@ -262,6 +268,7 @@ def make_model_config(
     model_class: type[ModelT] = diffusion_model.Diffuser,
     flash_attention_implementation: attention.Implementation = 'triton',
     num_diffusion_samples: int = 5,
+    cross_chain_templates: bool = False,
 ):
   """Returns a model config with some defaults overridden."""
   config = model_class.Config()
@@ -271,6 +278,10 @@ def make_model_config(
     )
   if hasattr(config, 'heads'):
     config.heads.diffusion.eval.num_samples = num_diffusion_samples
+
+  if hasattr(config, 'evoformer'):
+    config.evoformer.template.cross_chain_templates = cross_chain_templates
+
   return config
 
 
@@ -365,6 +376,7 @@ def predict_structure(
     fold_input: folding_input.Input,
     model_runner: ModelRunner,
     buckets: Sequence[int] | None = None,
+    separate_homomer_templates: bool = False,
 ) -> Sequence[ResultsForSeed]:
   """Runs the full inference pipeline to predict structures for each seed."""
 
@@ -372,7 +384,7 @@ def predict_structure(
   featurisation_start_time = time.time()
   ccd = chemical_components.cached_ccd(user_ccd=fold_input.user_ccd)
   featurised_examples = featurisation.featurise_input(
-      fold_input=fold_input, buckets=buckets, ccd=ccd, verbose=True
+      fold_input=fold_input, buckets=buckets, ccd=ccd, verbose=True, separate_homomer_templates=separate_homomer_templates,
   )
   print(
       f'Featurising data for seeds {fold_input.rng_seeds} took '
@@ -518,6 +530,7 @@ def process_fold_input(
     model_runner: ModelRunner | None,
     output_dir: os.PathLike[str] | str,
     buckets: Sequence[int] | None = None,
+    separate_homomer_templates: bool = False,
 ) -> folding_input.Input | Sequence[ResultsForSeed]:
   """Runs data pipeline and/or inference on a single fold input.
 
@@ -581,6 +594,7 @@ def process_fold_input(
         fold_input=fold_input,
         model_runner=model_runner,
         buckets=buckets,
+        separate_homomer_templates=separate_homomer_templates,
     )
     print(
         f'Writing outputs for {fold_input.name} for seed(s)'
@@ -707,6 +721,7 @@ def main(_):
                 attention.Implementation, _FLASH_ATTENTION_IMPLEMENTATION.value
             ),
             num_diffusion_samples=_NUM_DIFFUSION_SAMPLES.value,
+            cross_chain_templates=_CROSS_CHAIN_TEMPLATES.value,
         ),
         device=devices[0],
         model_dir=pathlib.Path(MODEL_DIR.value),
@@ -725,6 +740,7 @@ def main(_):
         model_runner=model_runner,
         output_dir=os.path.join(_OUTPUT_DIR.value, fold_input.sanitised_name()),
         buckets=tuple(int(bucket) for bucket in _BUCKETS.value),
+        separate_homomer_templates=_CROSS_CHAIN_TEMPLATES.value,
     )
     num_fold_inputs += 1
 

@@ -638,7 +638,12 @@ class Evoformer(hk.Module):
     asym_id = batch.token_features.asym_id
     # Construct a mask such that only intra-chain template features are
     # computed, since all templates are for each chain individually.
-    multichain_mask = (asym_id[:, None] == asym_id[None, :]).astype(dtype)
+    if self.config.template.cross_chain_templates:
+        logging.info("DISABLING CROSS-CHAIN MASK")
+        multichain_mask = ((asym_id[:, None] == asym_id[None, :]) | (asym_id[:, None] != asym_id[None, :])).astype(dtype)
+    else:
+        logging.info("CROSS-CHAIN MASK ENABLED (DEFAULT)")
+        multichain_mask = (asym_id[:, None] == asym_id[None, :]).astype(dtype)
 
     template_fn = functools.partial(template_module, key=subkey)
     template_act = template_fn(
