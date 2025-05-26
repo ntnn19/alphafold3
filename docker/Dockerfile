@@ -23,7 +23,7 @@ RUN apt update --quiet \
 # Get apt repository of specific Python versions. Then install Python. Tell APT
 # this isn't an interactive TTY to avoid timezone prompt when installing.
 RUN add-apt-repository ppa:deadsnakes/ppa \
-    && DEBIAN_FRONTEND=noninteractive apt install --yes --quiet python3.11 python3-pip python3.11-venv python3.11-dev
+    && DEBIAN_FRONTEND=noninteractive apt install --yes --quiet python3.11 python3-pip python3.11-venv python3.11-dev parallel
 RUN python3.11 -m venv /alphafold3_venv
 ENV PATH="/hmmer/bin:/alphafold3_venv/bin:$PATH"
 # Update pip to the latest version. Not necessary in Docker, but good to do when
@@ -32,7 +32,8 @@ ENV PATH="/hmmer/bin:/alphafold3_venv/bin:$PATH"
 RUN pip3 install --upgrade pip
 
 # Install HMMER. Do so before copying the source code, so that docker can cache
-# the image layer containing HMMER.
+# the image layer containing HMMER. Alternatively, you could also install it 
+# using `apt-get install hmmer` instead of bulding it from source.
 RUN mkdir /hmmer_build /hmmer ; \
     wget http://eddylab.org/software/hmmer/hmmer-3.4.tar.gz --directory-prefix /hmmer_build ; \
     (cd /hmmer_build && tar zxf hmmer-3.4.tar.gz && rm hmmer-3.4.tar.gz) ; \
@@ -61,7 +62,9 @@ RUN build_data
 # (no need to disable gemm in that case as it is not supported for such GPU).
 ENV XLA_FLAGS="--xla_gpu_enable_triton_gemm=false"
 # Memory settings used for folding up to 5,120 tokens on A100 80 GB.
-ENV XLA_PYTHON_CLIENT_PREALLOCATE=true
-ENV XLA_CLIENT_MEM_FRACTION=0.95
-
+#ENV XLA_PYTHON_CLIENT_PREALLOCATE=true
+#ENV XLA_CLIENT_MEM_FRACTION=3.2
+ENV XLA_PYTHON_CLIENT_PREALLOCATE=false
+ENV TF_FORCE_UNIFIED_MEMORY=true
+ENV XLA_CLIENT_MEM_FRACTION=3.2
 CMD ["python3", "run_alphafold.py"]
