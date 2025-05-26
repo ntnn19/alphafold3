@@ -8,11 +8,13 @@
 # if received directly from Google. Use is subject to terms of use available at
 # https://github.com/google-deepmind/alphafold3/blob/main/WEIGHTS_TERMS_OF_USE.md
 
-"""Diffusion model."""
+"""AlphaFold3 model."""
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 import concurrent
+import dataclasses
 import functools
+from typing import Any, TypeAlias
 
 from absl import logging
 from alphafold3 import structure
@@ -22,26 +24,48 @@ from alphafold3.model import feat_batch
 from alphafold3.model import features
 from alphafold3.model import model_config
 from alphafold3.model.atom_layout import atom_layout
-from alphafold3.model.components import base_model
-from alphafold3.model.components import haiku_modules as hm
 from alphafold3.model.components import mapping
 from alphafold3.model.components import utils
-from alphafold3.model.diffusion import atom_cross_attention
-from alphafold3.model.diffusion import confidence_head
-from alphafold3.model.diffusion import diffusion_head
-from alphafold3.model.diffusion import distogram_head
-from alphafold3.model.diffusion import featurization
-from alphafold3.model.diffusion import modules
-from alphafold3.model.diffusion import template_modules
-from alphafold3.structure import mmcif
+from alphafold3.model.network import atom_cross_attention
+from alphafold3.model.network import confidence_head
+from alphafold3.model.network import diffusion_head
+from alphafold3.model.network import distogram_head
+from alphafold3.model.network import evoformer as evoformer_network
+from alphafold3.model.network import featurization
 import haiku as hk
 import jax
 import jax.numpy as jnp
 import numpy as np
 
 
+ModelResult: TypeAlias = Mapping[str, Any]
+_ScalarNumberOrArray: TypeAlias = Mapping[str, float | int | np.ndarray]
+
+
+@dataclasses.dataclass(frozen=True)
+class InferenceResult:
+  """Postprocessed model result.
+
+  Attributes:
+    predicted_structure: Predicted protein structure.
+    numerical_data: Useful numerical data (scalars or arrays) to be saved at
+      inference time.
+    metadata: Smaller numerical data (usually scalar) to be saved as inference
+      metadata.
+    debug_outputs: Additional dict for debugging, e.g. raw outputs of a model
+      forward pass.
+    model_id: Model identifier.
+  """
+
+  predicted_structure: structure.Structure = dataclasses.field()
+  numerical_data: _ScalarNumberOrArray = dataclasses.field(default_factory=dict)
+  metadata: _ScalarNumberOrArray = dataclasses.field(default_factory=dict)
+  debug_outputs: Mapping[str, Any] = dataclasses.field(default_factory=dict)
+  model_id: bytes = b''
+
+
 def get_predicted_structure(
-    result: base_model.ModelResult, batch: feat_batch.Batch
+    result: ModelResult, batch: feat_batch.Batch
 ) -> structure.Structure:
   """Creates the predicted structure and ion preditions.
 
@@ -115,7 +139,7 @@ def get_predicted_structure(
 
 def create_target_feat_embedding(
     batch: feat_batch.Batch,
-    config: 'Evoformer.Config',
+    config: evoformer_network.Evoformer.Config,
     global_config: model_config.GlobalConfig,
 ) -> jnp.ndarray:
   """Create target feature embedding."""
@@ -145,7 +169,7 @@ def create_target_feat_embedding(
 
 
 def _compute_ptm(
-    result: base_model.ModelResult,
+    result: ModelResult,
     num_tokens: int,
     asym_id: np.ndarray,
     pae_single_mask: np.ndarray,
@@ -186,8 +210,8 @@ def _compute_chain_pair_iptm(
   )
 
 
-class Diffuser(hk.Module):
-  """Full Diffusion network."""
+class Model(hk.Module):
+  """Full model. Takes in data batch and returns model outputs."""
 
   class HeadsConfig(base_config.BaseConfig):
     diffusion: diffusion_head.DiffusionHead.Config = base_config.autocreate()
@@ -195,10 +219,11 @@ class Diffuser(hk.Module):
     distogram: distogram_head.DistogramHead.Config = base_config.autocreate()
 
   class Config(base_config.BaseConfig):
-    evoformer: 'Evoformer.Config' = base_config.autocreate()
+    evoformer: evoformer_network.Evoformer.Config = base_config.autocreate()
     global_config: model_config.GlobalConfig = base_config.autocreate()
-    heads: 'Diffuser.HeadsConfig' = base_config.autocreate()
+    heads: 'Model.HeadsConfig' = base_config.autocreate()
     num_recycles: int = 10
+    return_embeddings: bool = False
 
   def __init__(self, config: Config, name: str = 'diffuser'):
     super().__init__(name=name)
@@ -233,13 +258,15 @@ class Diffuser(hk.Module):
 
   def __call__(
       self, batch: features.BatchDict, key: jax.Array | None = None
-  ) -> base_model.ModelResult:
+  ) -> ModelResult:
     if key is None:
       key = hk.next_rng_key()
 
     batch = feat_batch.Batch.from_data_dict(batch)
 
-    embedding_module = Evoformer(self.config.evoformer, self.global_config)
+    embedding_module = evoformer_network.Evoformer(
+        self.config.evoformer, self.global_config
+    )
     target_feat = create_target_feat_embedding(
         batch=batch,
         config=embedding_module.config,
@@ -302,19 +329,23 @@ class Diffuser(hk.Module):
         self.config.heads.distogram, self.global_config
     )(batch, embeddings)
 
-    return {
+    output = {
         'diffusion_samples': samples,
         'distogram': distogram,
         **confidence_output,
     }
+    if self.config.return_embeddings:
+      output['single_embeddings'] = embeddings['single']
+      output['pair_embeddings'] = embeddings['pair']
+    return output
 
   @classmethod
   def get_inference_result(
       cls,
       batch: features.BatchDict,
-      result: base_model.ModelResult,
+      result: ModelResult,
       target_name: str = '',
-  ) -> Iterable[base_model.InferenceResult]:
+  ) -> Iterable[InferenceResult]:
     """Get the predicted structure, scalars, and arrays for inference.
 
     This function also computes any inference-time quantities, which are not a
@@ -360,7 +391,11 @@ class Diffuser(hk.Module):
     ptm_iptm_average = 0.8 * iptm + 0.2 * ptm
 
     asym_ids = batch.token_features.asym_id[:num_tokens]
-    chain_ids = [mmcif.int_id_to_str_id(asym_id) for asym_id in asym_ids]
+    # Map asym IDs back to chain IDs. Asym IDs are constructed from chain IDs by
+    # iterating over the chain IDs, and for each unique chain ID incrementing
+    # the asym ID by 1 and mapping it to the particular chain ID. Asym IDs are
+    # 1-indexed, so subtract 1 to get back to the chain ID.
+    chain_ids = [pred_structure.chains[asym_id - 1] for asym_id in asym_ids]
     res_ids = batch.token_features.residue_index[:num_tokens]
 
     if len(np.unique(asym_ids[:num_tokens])) > 1:
@@ -444,7 +479,7 @@ class Diffuser(hk.Module):
           fraction_disordered_=fraction_disordered[idx],
           has_clash_=has_clash[idx],
       )
-      yield base_model.InferenceResult(
+      yield InferenceResult(
           predicted_structure=pred_structure,
           numerical_data={
               'full_pde': result['full_pde'][idx, :num_tokens, :num_tokens],
@@ -477,6 +512,7 @@ class Diffuser(hk.Module):
               'token_res_ids': res_ids,
           },
           model_id=result['__identifier__'],
+          debug_outputs={},
       )
 
 
@@ -803,3 +839,5 @@ class Evoformer(hk.Module):
       }
 
     return output
+=======
+>>>>>>> main:src/alphafold3/model/model.py

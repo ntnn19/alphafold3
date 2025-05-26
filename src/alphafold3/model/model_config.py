@@ -8,7 +8,7 @@
 # if received directly from Google. Use is subject to terms of use available at
 # https://github.com/google-deepmind/alphafold3/blob/main/WEIGHTS_TERMS_OF_USE.md
 
-"""Config for the protein folding model and experiment."""
+"""Global config for the model."""
 
 from collections.abc import Sequence
 from typing import Literal, TypeAlias
@@ -24,6 +24,9 @@ class GlobalConfig(base_config.BaseConfig):
   bfloat16: Literal['all', 'none', 'intermediate'] = 'all'
   final_init: Literal['zeros', 'linear'] = 'zeros'
   pair_attention_chunk_size: Sequence[_Shape2DType] = ((1536, 128), (None, 32))
+# A/H100 40GB
+#  pair_transition_shard_spec: Sequence[_Shape2DType] = ((2048, None),(3072, 1024),(None, 512),)
+# A/H100 80GB
   pair_transition_shard_spec: Sequence[_Shape2DType] = (
       (2048, None),
       (None, 1024),
