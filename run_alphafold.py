@@ -201,6 +201,8 @@ _CROSS_CHAIN_TEMPLATES = flags.DEFINE_boolean(
   'cross_chain_templates',
   False,
   'Whether to include cross-chain distances in multimer templates',
+)
+
 _CONFORMER_MAX_ITERATIONS = flags.DEFINE_integer(
     'conformer_max_iterations',
     None,  # Default to RDKit default parameters value.
