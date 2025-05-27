@@ -839,5 +839,3 @@ class Evoformer(hk.Module):
       }
 
     return output
-=======
->>>>>>> main:src/alphafold3/model/model.py
