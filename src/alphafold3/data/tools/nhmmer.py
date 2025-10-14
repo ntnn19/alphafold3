@@ -85,7 +85,12 @@ class Nhmmer(msa_tool.MsaTool):
 
   def query(self, target_sequence: str) -> msa_tool.MsaToolResult:
     """Query the database using Nhmmer."""
-    logging.info('Query sequence: %s', target_sequence)
+    logging.info(
+        'Query sequence: %s',
+        target_sequence
+        if len(target_sequence) <= 16
+        else f'{target_sequence[:16]}... (len {len(target_sequence)})',
+    )
 
     with tempfile.TemporaryDirectory() as query_tmp_dir:
       input_a3m_path = os.path.join(query_tmp_dir, 'query.a3m')
