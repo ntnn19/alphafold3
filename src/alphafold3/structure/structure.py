@@ -308,7 +308,7 @@ class Structure(table.Database):
     # b/345221494 Rename this variable when structure_v1 compatibility code
     # is removed.
     self._VERSION = '2.0.0'  # pylint: disable=invalid-name
-    self._name = name
+    self._name = name or 'unset'
     self._release_date = release_date
     self._resolution = resolution
     self._structure_method = structure_method

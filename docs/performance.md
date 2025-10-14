@@ -4,12 +4,16 @@
 
 The runtime of the data pipeline (i.e. genetic sequence search and template
 search) can vary significantly depending on the size of the input and the number
-of homologous sequences found, as well as the available hardware (disk speed can
-influence genetic search speed in particular). If you would like to improve
-performance, it’s recommended to increase the disk speed (e.g. by leveraging a
-RAM-backed filesystem), or increase the available CPU cores and add more
-parallelisation. Also note that for sequences with deep MSAs, Jackhmmer or
-Nhmmer may need a substantial amount of RAM beyond the recommended 64 GB of RAM.
+of homologous sequences found, as well as the available hardware – the disk
+speed can influence genetic search speed in particular.
+
+If you would like to improve performance, it's recommended to increase the disk
+speed (e.g. by leveraging a RAM-backed filesystem), or increase the available
+CPU cores and add more parallelisation. This can help because AlphaFold 3 runs
+genetic search against 4 databases in parallel, so the optimal number of cores
+is the number of cores used for each Jackhmmer process times 4. Also note that
+for sequences with deep MSAs, Jackhmmer or Nhmmer may need a substantial amount
+of RAM beyond the recommended 64 GB of RAM.
 
 ## Model Inference
 
@@ -40,9 +44,14 @@ utilisation. This can be useful for:
 
 1.  Splitting the CPU-only data pipeline from model inference (which requires a
     GPU), to optimise cost and resource usage.
-1.  Caching the results of MSA/template search, then reusing the augmented JSON
-    for multiple different inferences across seeds or across variations of other
-    features (e.g. a ligand).
+1.  Generating the JSON output file from the data pipeline only run and then
+    using it for multiple different inference only runs across seeds or across
+    variations of other features (e.g. a ligand or a partner chain).
+1.  Generating the JSON output for multiple individual monomer chains (e.g. for
+    chains A, B, C, D), then running the inference on all possible chain pairs
+    (AB, AC, AD, BC, BD, CD) by creating dimer JSONs by merging the monomer
+    JSONs. By doing this, the MSA and template search need to be run just 4
+    times (once for each chain), instead of 12 times.
 
 ### Data Pipeline Only
 
@@ -56,7 +65,8 @@ directly used as input for running inference.
 
 Launch `run_alphafold.py` with `--norun_data_pipeline` to skip the data pipeline
 and run only featurisation and model inference. This stage requires the input
-JSON file to contain pre-computed MSAs and templates.
+JSON file to contain pre-computed MSAs and templates (or they must be explicitly
+set to empty if you want to run MSA and template free).
 
 ## Accelerator Hardware Requirements
 

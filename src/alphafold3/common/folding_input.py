@@ -16,6 +16,7 @@ import gzip
 import json
 import logging
 import lzma
+import os
 import pathlib
 import random
 import re
@@ -35,7 +36,7 @@ import zstandard as zstd
 BondAtomId: TypeAlias = tuple[str, int, str]
 
 JSON_DIALECT: Final[str] = 'alphafold3'
-JSON_VERSIONS: Final[tuple[int, ...]] = (1, 2)
+JSON_VERSIONS: Final[tuple[int, ...]] = (1, 2, 3, 4)
 JSON_VERSION: Final[int] = JSON_VERSIONS[-1]
 
 ALPHAFOLDSERVER_JSON_DIALECT: Final[str] = 'alphafoldserver'
@@ -126,6 +127,7 @@ class ProteinChain:
       '_id',
       '_sequence',
       '_ptms',
+      '_description',
       '_paired_msa',
       '_unpaired_msa',
       '_templates',
@@ -137,6 +139,7 @@ class ProteinChain:
       id: str,  # pylint: disable=redefined-builtin
       sequence: str,
       ptms: Sequence[tuple[str, int]],
+      description: str | None = None,
       paired_msa: str | None = None,
       unpaired_msa: str | None = None,
       templates: Sequence[Template] | None = None,
@@ -148,6 +151,7 @@ class ProteinChain:
       sequence: The amino acid sequence of the chain.
       ptms: A list of tuples containing the post-translational modification type
         and the (1-based) residue index where the modification is applied.
+      description: An optional textual description of the protein chain.
       paired_msa: Paired A3M-formatted MSA for this chain. This MSA is not
         deduplicated and will be used to compute paired features. If None, this
         field is unset and must be filled in by the data pipeline before
@@ -174,6 +178,7 @@ class ProteinChain:
     self._id = id
     self._sequence = sequence
     self._ptms = tuple(ptms)
+    self._description = description
     self._paired_msa = paired_msa
     self._unpaired_msa = unpaired_msa
     self._templates = tuple(templates) if templates is not None else None
@@ -198,6 +203,10 @@ class ProteinChain:
     return self._ptms
 
   @property
+  def description(self) -> str | None:
+    return self._description
+
+  @property
   def paired_msa(self) -> str | None:
     return self._paired_msa
 
@@ -217,6 +226,7 @@ class ProteinChain:
         self._id == other._id
         and self._sequence == other._sequence
         and self._ptms == other._ptms
+        and self._description == other._description
         and self._paired_msa == other._paired_msa
         and self._unpaired_msa == other._unpaired_msa
         and self._templates == other._templates
@@ -227,6 +237,7 @@ class ProteinChain:
         self._id,
         self._sequence,
         self._ptms,
+        self._description,
         self._paired_msa,
         self._unpaired_msa,
         self._templates,
@@ -237,6 +248,7 @@ class ProteinChain:
     return hash((
         self._sequence,
         self._ptms,
+        self._description,
         self._paired_msa,
         self._unpaired_msa,
         self._templates,
@@ -297,6 +309,7 @@ class ProteinChain:
             'id',
             'sequence',
             'modifications',
+            'description',
             'unpairedMsa',
             'unpairedMsaPath',
             'pairedMsa',
@@ -315,6 +328,14 @@ class ProteinChain:
     unpaired_msa_path = json_dict.get('unpairedMsaPath', None)
     if unpaired_msa and unpaired_msa_path:
       raise ValueError('Only one of unpairedMsa/unpairedMsaPath can be set.')
+    if (
+        unpaired_msa
+        and len(unpaired_msa) < 256
+        and os.path.exists(unpaired_msa)
+    ):
+      raise ValueError(
+          'Set the unpaired MSA path using the "unpairedMsaPath" field.'
+      )
     elif unpaired_msa_path:
       unpaired_msa = _read_file(pathlib.Path(unpaired_msa_path), json_path)
 
@@ -322,6 +343,10 @@ class ProteinChain:
     paired_msa_path = json_dict.get('pairedMsaPath', None)
     if paired_msa and paired_msa_path:
       raise ValueError('Only one of pairedMsa/pairedMsaPath can be set.')
+    if paired_msa and len(paired_msa) < 256 and os.path.exists(paired_msa):
+      raise ValueError(
+          'Set the paired MSA path using the "pairedMsaPath" field.'
+      )
     elif paired_msa_path:
       paired_msa = _read_file(pathlib.Path(paired_msa_path), json_path)
 
@@ -332,10 +357,16 @@ class ProteinChain:
     else:
       templates = []
       for raw_template in raw_templates:
+        _validate_keys(
+            raw_template.keys(),
+            {'mmcif', 'mmcifPath', 'queryIndices', 'templateIndices'},
+        )
         mmcif = raw_template.get('mmcif', None)
         mmcif_path = raw_template.get('mmcifPath', None)
         if mmcif and mmcif_path:
           raise ValueError('Only one of mmcif/mmcifPath can be set.')
+        if mmcif and len(mmcif) < 256 and os.path.exists(mmcif):
+          raise ValueError('Set the template path using the "mmcifPath" field.')
         if mmcif_path:
           mmcif = _read_file(pathlib.Path(mmcif_path), json_path)
         query_to_template_map = dict(
@@ -349,6 +380,7 @@ class ProteinChain:
         id=seq_id or json_dict['id'],
         sequence=sequence,
         ptms=ptms,
+        description=json_dict.get('description', None),
         paired_msa=paired_msa,
         unpaired_msa=unpaired_msa,
         templates=templates,
@@ -381,6 +413,8 @@ class ProteinChain:
         'pairedMsa': self._paired_msa,
         'templates': templates,
     }
+    if self._description is not None:
+      contents['description'] = self._description
     return {'protein': contents}
 
   def to_ccd_sequence(self) -> Sequence[str]:
@@ -399,6 +433,7 @@ class ProteinChain:
         id=self.id,
         sequence=self._sequence,
         ptms=self._ptms,
+        description=self._description,
         unpaired_msa=self._unpaired_msa or '',
         paired_msa=self._paired_msa or '',
         templates=self._templates or [],
@@ -408,7 +443,13 @@ class ProteinChain:
 class RnaChain:
   """RNA chain input."""
 
-  __slots__ = ('_id', '_sequence', '_modifications', '_unpaired_msa')
+  __slots__ = (
+      '_id',
+      '_sequence',
+      '_modifications',
+      '_description',
+      '_unpaired_msa',
+  )
 
   def __init__(
       self,
@@ -416,6 +457,7 @@ class RnaChain:
       id: str,  # pylint: disable=redefined-builtin
       sequence: str,
       modifications: Sequence[tuple[str, int]],
+      description: str | None = None,
       unpaired_msa: str | None = None,
   ):
     """Initializes a single strand RNA chain input.
@@ -425,6 +467,7 @@ class RnaChain:
       sequence: The RNA sequence of the chain.
       modifications: A list of tuples containing the modification type and the
         (1-based) residue index where the modification is applied.
+      description: An optional textual description of the RNA chain.
       unpaired_msa: Unpaired A3M-formatted MSA for this chain. This will be
         deduplicated and used to compute unpaired features. If None, this field
         is unset and must be filled in by the data pipeline before
@@ -444,6 +487,7 @@ class RnaChain:
     self._sequence = sequence
     # Use hashable container for modifications.
     self._modifications = tuple(modifications)
+    self._description = description
     self._unpaired_msa = unpaired_msa
 
   @property
@@ -466,6 +510,10 @@ class RnaChain:
     return self._modifications
 
   @property
+  def description(self) -> str | None:
+    return self._description
+
+  @property
   def unpaired_msa(self) -> str | None:
     return self._unpaired_msa
 
@@ -477,17 +525,27 @@ class RnaChain:
         self._id == other._id
         and self._sequence == other._sequence
         and self._modifications == other._modifications
+        and self._description == other._description
         and self._unpaired_msa == other._unpaired_msa
     )
 
   def __hash__(self) -> int:
-    return hash(
-        (self._id, self._sequence, self._modifications, self._unpaired_msa)
-    )
+    return hash((
+        self._id,
+        self._sequence,
+        self._modifications,
+        self._description,
+        self._unpaired_msa,
+    ))
 
   def hash_without_id(self) -> int:
     """Returns a hash ignoring the ID - useful for deduplication."""
-    return hash((self._sequence, self._modifications, self._unpaired_msa))
+    return hash((
+        self._sequence,
+        self._modifications,
+        self._description,
+        self._unpaired_msa,
+    ))
 
   @classmethod
   def from_alphafoldserver_dict(
@@ -513,7 +571,14 @@ class RnaChain:
     json_dict = json_dict['rna']
     _validate_keys(
         json_dict.keys(),
-        {'id', 'sequence', 'unpairedMsa', 'unpairedMsaPath', 'modifications'},
+        {
+            'id',
+            'sequence',
+            'modifications',
+            'description',
+            'unpairedMsa',
+            'unpairedMsaPath',
+        },
     )
     sequence = json_dict['sequence']
     modifications = [
@@ -525,6 +590,14 @@ class RnaChain:
     unpaired_msa_path = json_dict.get('unpairedMsaPath', None)
     if unpaired_msa and unpaired_msa_path:
       raise ValueError('Only one of unpairedMsa/unpairedMsaPath can be set.')
+    if (
+        unpaired_msa
+        and len(unpaired_msa) < 256
+        and os.path.exists(unpaired_msa)
+    ):
+      raise ValueError(
+          'Set the unpaired MSA path using the "unpairedMsaPath" field.'
+      )
     elif unpaired_msa_path:
       unpaired_msa = _read_file(pathlib.Path(unpaired_msa_path), json_path)
 
@@ -532,6 +605,7 @@ class RnaChain:
         id=seq_id or json_dict['id'],
         sequence=sequence,
         modifications=modifications,
+        description=json_dict.get('description', None),
         unpaired_msa=unpaired_msa,
     )
 
@@ -548,6 +622,8 @@ class RnaChain:
         ],
         'unpairedMsa': self._unpaired_msa,
     }
+    if self._description is not None:
+      contents['description'] = self._description
     return {'rna': contents}
 
   def to_ccd_sequence(self) -> Sequence[str]:
@@ -573,7 +649,7 @@ class RnaChain:
 class DnaChain:
   """Single strand DNA chain input."""
 
-  __slots__ = ('_id', '_sequence', '_modifications')
+  __slots__ = ('_id', '_sequence', '_modifications', '_description')
 
   def __init__(
       self,
@@ -581,6 +657,7 @@ class DnaChain:
       id: str,  # pylint: disable=redefined-builtin
       sequence: str,
       modifications: Sequence[tuple[str, int]],
+      description: str | None = None,
   ):
     """Initializes a single strand DNA chain input.
 
@@ -589,6 +666,7 @@ class DnaChain:
       sequence: The DNA sequence of the chain.
       modifications: A list of tuples containing the modification type and the
         (1-based) residue index where the modification is applied.
+      description: An optional textual description of the DNA chain.
     """
     if not all(res.isalpha() for res in sequence):
       raise ValueError(f'DNA must contain only letters, got "{sequence}"')
@@ -603,6 +681,7 @@ class DnaChain:
     self._sequence = sequence
     # Use hashable container for modifications.
     self._modifications = tuple(modifications)
+    self._description = description
 
   @property
   def id(self) -> str:
@@ -619,6 +698,10 @@ class DnaChain:
         for r in self.to_ccd_sequence()
     ])
 
+  @property
+  def description(self) -> str | None:
+    return self._description
+
   def __len__(self) -> int:
     return len(self._sequence)
 
@@ -627,17 +710,20 @@ class DnaChain:
         self._id == other._id
         and self._sequence == other._sequence
         and self._modifications == other._modifications
+        and self._description == other._description
     )
 
   def __hash__(self) -> int:
-    return hash((self._id, self._sequence, self._modifications))
+    return hash(
+        (self._id, self._sequence, self._modifications, self._description)
+    )
 
   def modifications(self) -> Sequence[tuple[str, int]]:
     return self._modifications
 
   def hash_without_id(self) -> int:
     """Returns a hash ignoring the ID - useful for deduplication."""
-    return hash((self._sequence, self._modifications))
+    return hash((self._sequence, self._modifications, self._description))
 
   @classmethod
   def from_alphafoldserver_dict(
@@ -658,7 +744,9 @@ class DnaChain:
   ) -> Self:
     """Constructs DnaChain from the AlphaFold JSON dict."""
     json_dict = json_dict['dna']
-    _validate_keys(json_dict.keys(), {'id', 'sequence', 'modifications'})
+    _validate_keys(
+        json_dict.keys(), {'id', 'sequence', 'modifications', 'description'}
+    )
     sequence = json_dict['sequence']
     modifications = [
         (mod['modificationType'], mod['basePosition'])
@@ -668,6 +756,7 @@ class DnaChain:
         id=seq_id or json_dict['id'],
         sequence=sequence,
         modifications=modifications,
+        description=json_dict.get('description', None),
     )
 
   def to_dict(
@@ -682,6 +771,8 @@ class DnaChain:
             for mod in self._modifications
         ],
     }
+    if self._description is not None:
+      contents['description'] = self._description
     return {'dna': contents}
 
   def to_ccd_sequence(self) -> Sequence[str]:
@@ -707,11 +798,13 @@ class Ligand:
       a bond linking these components should be added to the bonded_atom_pairs
       Input field.
     smiles: The SMILES representation of the ligand.
+    description: An optional textual description of the ligand.
   """
 
   id: str
   ccd_ids: Sequence[str] | None = None
   smiles: str | None = None
+  description: str | None = None
 
   def __post_init__(self):
     if (self.ccd_ids is None) == (self.smiles is None):
@@ -734,7 +827,7 @@ class Ligand:
 
   def hash_without_id(self) -> int:
     """Returns a hash ignoring the ID - useful for deduplication."""
-    return hash((self.ccd_ids, self.smiles))
+    return hash((self.ccd_ids, self.smiles, self.description))
 
   @classmethod
   def from_alphafoldserver_dict(
@@ -756,17 +849,33 @@ class Ligand:
   ) -> Self:
     """Constructs Ligand from the AlphaFold JSON dict."""
     json_dict = json_dict['ligand']
-    _validate_keys(json_dict.keys(), {'id', 'ccdCodes', 'smiles'})
+    _validate_keys(
+        json_dict.keys(), {'id', 'ccdCodes', 'smiles', 'description'}
+    )
     if json_dict.get('ccdCodes') and json_dict.get('smiles'):
       raise ValueError(
           'Ligand cannot have both CCD code and SMILES set at the same time, '
-          f'got CCD: {json_dict["ccdCode"]} and SMILES: {json_dict["smiles"]}'
+          f'got CCD: {json_dict["ccdCodes"]} and SMILES: {json_dict["smiles"]}'
       )
 
     if 'ccdCodes' in json_dict:
-      return cls(id=seq_id or json_dict['id'], ccd_ids=json_dict['ccdCodes'])
+      ccd_codes = json_dict['ccdCodes']
+      if not isinstance(ccd_codes, (list, tuple)):
+        raise ValueError(
+            'CCD codes must be a list of strings, got '
+            f'{type(ccd_codes).__name__} instead: {ccd_codes}'
+        )
+      return cls(
+          id=seq_id or json_dict['id'],
+          ccd_ids=ccd_codes,
+          description=json_dict.get('description', None),
+      )
     elif 'smiles' in json_dict:
-      return cls(id=seq_id or json_dict['id'], smiles=json_dict['smiles'])
+      return cls(
+          id=seq_id or json_dict['id'],
+          smiles=json_dict['smiles'],
+          description=json_dict.get('description', None),
+      )
     else:
       raise ValueError(f'Unknown ligand type: {json_dict}')
 
@@ -779,6 +888,8 @@ class Ligand:
       contents['ccdCodes'] = self.ccd_ids
     if self.smiles is not None:
       contents['smiles'] = self.smiles
+    if self.description is not None:
+      contents['description'] = self.description
     return {'ligand': contents}
 
 
@@ -895,9 +1006,9 @@ class Input:
 
   def sanitised_name(self) -> str:
     """Returns sanitised version of the name that can be used as a filename."""
-    lower_spaceless_name = self.name.lower().replace(' ', '_')
-    allowed_chars = set(string.ascii_lowercase + string.digits + '_-.')
-    return ''.join(l for l in lower_spaceless_name if l in allowed_chars)
+    spaceless_name = self.name.replace(' ', '_')
+    allowed_chars = set(string.ascii_letters + string.digits + '_-.')
+    return ''.join(l for l in spaceless_name if l in allowed_chars)
 
   @classmethod
   def from_alphafoldserver_fold_job(cls, fold_job: Mapping[str, Any]) -> Self:
@@ -1005,6 +1116,7 @@ class Input:
             'sequences',
             'bondedAtomPairs',
             'userCCD',
+            'userCCDPath',
         },
     )
 
@@ -1121,12 +1233,21 @@ class Input:
       if len(bonded_atom_pairs) != len(set(bonded_atom_pairs)):
         raise ValueError(f'Bonds are not unique: {bonded_atom_pairs}')
 
+    user_ccd = raw_json.get('userCCD')
+    user_ccd_path = raw_json.get('userCCDPath')
+    if user_ccd and user_ccd_path:
+      raise ValueError('Only one of userCCD/userCCDPath can be set.')
+    if user_ccd and len(user_ccd) < 256 and os.path.exists(user_ccd):
+      raise ValueError('Set the user CCD path using the "userCCDPath" field.')
+    elif user_ccd_path:
+      user_ccd = _read_file(pathlib.Path(user_ccd_path), json_path)
+
     return cls(
         name=raw_json['name'],
         chains=chains,
         rng_seeds=[int(seed) for seed in raw_json['modelSeeds']],
         bonded_atom_pairs=bonded_atom_pairs,
-        user_ccd=raw_json.get('userCCD'),
+        user_ccd=user_ccd,
     )
 
   @classmethod
@@ -1300,18 +1421,17 @@ class Input:
             (chain_indices[bond_end[0]], bond_end[1] - 1, bond_end[2]),
         ))
 
-    struc = structure.from_sequences_and_bonds(
+    return structure.from_sequences_and_bonds(
         sequences=sequences,
         chain_types=poly_types,
         sequence_formats=formats,
+        chain_ids=ids,
         bonded_atom_pairs=bonded_atom_pairs,
         ccd=ccd,
         name=self.sanitised_name(),
         bond_type=mmcif_names.COVALENT_BOND,
         release_date=None,
     )
-    # Rename chain IDs to the original ones.
-    return struc.rename_chain_ids(dict(zip(struc.chains, ids, strict=True)))
 
   def to_json(self) -> str:
     """Converts Input to an AlphaFold JSON."""
