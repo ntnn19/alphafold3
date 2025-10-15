@@ -303,8 +303,8 @@ _FORCE_OUTPUT_DIR = flags.DEFINE_bool(
     ' and is non-empty. Useful to set this to True to run the data pipeline and'
     ' the inference separately, but use the same output directory.',
 )
-_COMPRESS_OUTPUT = flags.DEFINE_bool(
-    'compress_output',
+_COMPRESS_OUTPUT_DIR = flags.DEFINE_bool(
+    'compress_output_dir',
     False,
     'If True, compress the entire output directory into a single .tar.gz archive '
     'after all outputs are written, and remove the uncompressed version.',
@@ -533,7 +533,7 @@ def write_outputs(
     all_inference_results: Sequence[ResultsForSeed],
     output_dir: os.PathLike[str] | str,
     job_name: str,
-    compress: bool = False,
+    compress_output_dir: bool = False,
 ) -> None:
   """Writes outputs to the specified output directory."""
   ranking_scores = []
@@ -595,7 +595,7 @@ def write_outputs(
   #prompt used for chatGPT: "modfiy the following function to include a flag for compressing the output dir.
   # keep the number of changes to minimum"
   # Compress and remove original directory if successful.
-  if compress:
+  if compress_output_dir:
     archive_path = f"{output_dir}.tar.gz"
     try:
       with tarfile.open(archive_path, "w:gz") as tar:
@@ -635,6 +635,7 @@ def process_fold_input(
     conformer_max_iterations: int | None = None,
     resolve_msa_overlaps: bool = True,
     force_output_dir: bool = False,
+    compress_output_dir: bool = False
 ) -> folding_input.Input:
   ...
 
@@ -750,7 +751,7 @@ def process_fold_input(
         all_inference_results=all_inference_results,
         output_dir=output_dir,
         job_name=fold_input.sanitised_name(),
-        compress=_COMPRESS_OUTPUT.value
+        compress_output_dir=compress_output_dir
     )
     output = all_inference_results
 
@@ -905,6 +906,7 @@ def main(_):
         conformer_max_iterations=_CONFORMER_MAX_ITERATIONS.value,
         resolve_msa_overlaps=_RESOLVE_MSA_OVERLAPS.value,
         force_output_dir=_FORCE_OUTPUT_DIR.value,
+        compress_output_dir=_COMPRESS_OUTPUT_DIR.value,
     )
     num_fold_inputs += 1
 
