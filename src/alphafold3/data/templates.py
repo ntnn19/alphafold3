@@ -862,9 +862,11 @@ def get_polymer_features(
   chain_sequence = chain.chain_single_letter_sequence()[label_chain_id]
 
   polymer = _POLYMERS[chain_poly_type]
-  positions, positions_mask = chain.to_res_arrays(
+  res_arrays = chain.to_res_arrays(
       include_missing_residues=True, atom_order=polymer.atom_order
   )
+  positions = res_arrays.atom_positions
+  positions_mask = res_arrays.atom_mask
   template_all_atom_positions = np.zeros(
       (query_sequence_length, polymer.num_atom_types, 3), dtype=np.float64
   )
