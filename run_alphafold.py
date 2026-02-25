@@ -376,6 +376,18 @@ _COMPRESS_LARGE_OUTPUT_FILES = flags.DEFINE_bool(
     ' largest files) using zstandard. Note that embeddings and distogram, if'
     ' saved, are already stored in a compressed format.',
 )
+_USE_AFDB_MSA = flags.DEFINE_bool(
+    'use_afdb_msa',
+    False,
+    'If True, adds msa from AlphaFoldDB to protein chains that perfectly match an entry in AlphaFoldDB.'
+    'To use this option, the user must set the UniProt accession as the sequence of the chain.'
+)
+_AFDB_VERSION = flags.DEFINE_integer(
+    'afdb_version',
+    6,
+    'Specifies which version of AlphaFoldDB to use when --use_afdb_msa is True.'
+    'Ignored if --use_afdb_msa is False.'
+)
 
 
 def make_model_config(
@@ -939,6 +951,8 @@ def main(_):
         nhmmer_n_cpu=_NHMMER_N_CPU.value,
         nhmmer_max_parallel_shards=_NHMMER_MAX_PARALLEL_SHARDS.value,
         max_template_date=max_template_date,
+        use_afdb_msa=_USE_AFDB_MSA.value,
+        afdb_version=_AFDB_VERSION.value,
     )
   else:
     data_pipeline_config = None
