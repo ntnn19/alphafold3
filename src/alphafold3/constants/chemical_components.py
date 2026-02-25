@@ -67,7 +67,7 @@ class Ccd(Mapping[str, Mapping[str, Sequence[str]]]):
       if not user_ccd:
         raise ValueError('User CCD cannot be an empty string.')
       user_ccd_cifs = {
-          key: {k: tuple(v) for k, v in value.items()}
+          key: value.to_dict()
           for key, value in cif_dict.parse_multi_data_cif(user_ccd).items()
       }
       self._dict.update(user_ccd_cifs)
