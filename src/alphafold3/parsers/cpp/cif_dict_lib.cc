@@ -116,7 +116,7 @@ absl::StatusOr<std::vector<absl::string_view>> TokenizeInternal(
   tokens.reserve(lines.size() * 21);
   int line_num = 0;
   while (line_num < lines.size()) {
-    auto line = lines[line_num];
+    auto line = absl::StripSuffix(lines[line_num], "\r");
     line_num++;
 
     if (line.empty() || line[0] == '#') {

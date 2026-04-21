@@ -1,42 +1,5 @@
 # Performance
 
-## Data Pipeline
-
-The runtime of the data pipeline (i.e. genetic sequence search and template
-search) can vary significantly depending on the size of the input and the number
-of homologous sequences found, as well as the available hardware – the disk
-speed can influence genetic search speed in particular.
-
-If you would like to improve performance, it's recommended to increase the disk
-speed (e.g. by leveraging a RAM-backed filesystem), or increase the available
-CPU cores and add more parallelisation. This can help because AlphaFold 3 runs
-genetic search against 4 databases in parallel, so the optimal number of cores
-is the number of cores used for each Jackhmmer process times 4. Also note that
-for sequences with deep MSAs, Jackhmmer or Nhmmer may need a substantial amount
-of RAM beyond the recommended 64 GB of RAM.
-
-## Model Inference
-
-Table 8 in the Supplementary Information of the
-[AlphaFold 3 paper](https://nature.com/articles/s41586-024-07487-w) provides
-compile-free inference timings for AlphaFold 3 when configured to run on 16
-NVIDIA A100s, with 40 GB of memory per device. In contrast, this repository
-supports running AlphaFold 3 on a single NVIDIA A100 with 80 GB of memory in a
-configuration optimised to maximise throughput.
-
-We compare compile-free inference timings of these two setups in the table below
-using GPU seconds (i.e. multiplying by 16 when using 16 A100s). The setup in
-this repository is more efficient (by at least 2×) across all token sizes,
-indicating its suitability for high-throughput applications.
-
-Num Tokens | 1 A100 80 GB (GPU secs) | 16 A100 40 GB (GPU secs) | Improvement
-:--------- | ----------------------: | -----------------------: | ----------:
-1024       | 62                      | 352                      | 5.7×
-2048       | 275                     | 1136                     | 4.1×
-3072       | 703                     | 2016                     | 2.9×
-4096       | 1434                    | 3648                     | 2.5×
-5120       | 2547                    | 5552                     | 2.2×
-
 ## Running the Pipeline in Stages
 
 The `run_alphafold.py` script can be executed in stages to optimise resource
@@ -61,12 +24,164 @@ inference. This stage can be quite costly in terms of runtime, CPU, and RAM use.
 The output will be JSON files augmented with MSAs and templates that can then be
 directly used as input for running inference.
 
+### Pre-computing and reusing MSA and templates
+
+When folding multiple candidate chains with a set of fixed chains (i.e. chains
+that are the same for all the runs), you can optimize the process by computing
+the MSA and templates for the fixed chains only once. The computations for the
+changing candidate chains will still be performed for each run:
+
+1.  Run the AlphaFold 3 data pipeline for the fixed chains using the
+    `--run_inference=false` flag. This step generates a JSON file containing the
+    MSA and template data for these chains.
+2.  When constructing your multimer input JSONs, populate the entries for the
+    fixed chains using the data generated in the previous step.
+    *   For the fixed chains: Specifically, copy the `unpairedMsa`, `pairedMsa`,
+        and `templates` fields from the pre-computed JSON into the multimer
+        input JSON. This prevents these fields from being recomputed.
+    *   For the candidate chains: Leave these fields unset (or `null`) in the
+        multimer input JSON. This will signal the pipeline to compute them
+        dynamically for each run.
+
+This technique can also be extended to efficiently process all combinations of
+*n* first chains and *m* second chains. Instead of performing *n* × *m* full
+computations, you can reduce this to *n* + *m* data pipeline runs.
+
+In this scenario:
+
+1.  Run the data pipeline (step 1 above, with `--run_inference=false`) for all
+    *n* individual first chains and all *m* individual second chains.
+2.  Assemble the dimer input JSONs for each desired pair by combining their
+    respective pre-computed monomer JSONs.
+3.  Run only the inference step on these assembled JSONs using the
+    `--run_data_pipeline=false` flag.
+
+This approach has been discussed in multiple GitHub issues, such as:
+https://github.com/google-deepmind/alphafold3/issues/171 (which links to other
+similar issues).
+
 ### Featurisation and Model Inference Only
 
 Launch `run_alphafold.py` with `--norun_data_pipeline` to skip the data pipeline
 and run only featurisation and model inference. This stage requires the input
 JSON file to contain pre-computed MSAs and templates (or they must be explicitly
 set to empty if you want to run MSA and template free).
+
+## Data Pipeline
+
+The runtime of the data pipeline (i.e. genetic sequence search and template
+search) can vary significantly depending on the size of the input and the number
+of homologous sequences found, as well as the available hardware – the disk
+speed can influence genetic search speed in particular.
+
+If you would like to improve performance, it's recommended to increase the disk
+speed (e.g. by leveraging a RAM-backed filesystem), or increase the available
+CPU cores and add more parallelisation. This can help because AlphaFold 3 runs
+genetic search against 4 databases in parallel, so the optimal number of cores
+is the number of cores used for each Jackhmmer process times 4. Also note that
+for sequences with deep MSAs, Jackhmmer or Nhmmer may need a substantial amount
+of RAM beyond the recommended 64 GB of RAM.
+
+### Sharded genetic databases
+
+The run time of the genetic database search can be *significantly* sped up by
+splitting the genetic databases if a machine with many CPU cores is used and the
+databases are on very fast SSD or in a RAM-backed filesystem. With this
+technique you can make Jackhmmer/Nhmmer genetic search fully utilize your
+hardware and take advantage of multi-core systems.
+
+Each genetic database with *n* sequences is split into *s* shards, each
+containing roughly *n* / *s* sequences. We recommend splitting the sequences
+between shards randomly to make sure each shard has similar sequence length
+distribution. This could be achieved using standard tools:
+
+1.  Shuffle the sequences in the fasta. This can be done for example by running:
+    `seqkit shuffle --two-pass <db.fasta>`
+2.  Split the shuffled fasta in *s* shards. This can be done for example by
+    running: `seqkit split2 --by-part <s> <db.fasta>`
+
+Make sure the shards names follow this pattern:
+`prefix-<shard_index>-of-<total_shards>`, both `shard_index` and `total_shards`
+having always 5 digits, with leading zeros as needed. The `shard_index` goes
+from 0 to `total_shards - 1`. A file "path" (spec) for a sharded file is
+`prefix@<total_shards>`.
+
+E.g. for a file named `uniprot.fasta` split into 3 shards, the names of the
+shards should be:
+
+*   `uniprot.fasta-00000-of-00003`
+*   `uniprot.fasta-00001-of-00003`
+*   `uniprot.fasta-00002-of-00003`
+
+The file spec for these files is `uniprot.fasta@3`.
+
+Save the total number of sequences in the protein databases, and the total
+number of nucleic bases in the RNA databases – these will be needed later as a
+flag to Jackhmmer/Nhmmer to correctly scale e-values across all shards.
+
+Save the sharded databases on a fast SSD or in a RAM-backed filesystem, then
+launch AlphaFold with the sharded paths instead of normal paths and set the
+Z-values.
+
+For instance with each database sharded into 16 shards:
+
+```bash
+python run_alphafold.py \
+    --small_bfd_database_path="bfd-first_non_consensus_sequences.fasta@64" \
+    --small_bfd_z_value=65984053 \
+    --mgnify_database_path="mgy_clusters_2022_05.fa@512" \
+    --mgnify_z_value=623796864 \
+    --uniprot_cluster_annot_database_path="uniprot_cluster_annot_2021_04.fasta@256" \
+    --uniprot_cluster_annot_z_value=225619586 \
+    --uniref90_database_path="uniref90_2022_05.fasta@128" \
+    --uniref90_z_value=153742194 \
+    --ntrna_database_path="nt_rna_2023_02_23_clust_seq_id_90_cov_80_rep_seq.fasta@256" \
+    --ntrna_z_value=76752.808514 \
+    --rfam_database_path="rfam_14_9_clust_seq_id_90_cov_80_rep_seq.fasta@16" \
+    --rfam_z_value=138.115553 \
+    --rna_central_database_path="rnacentral_active_seq_id_90_cov_80_linclust.fasta@64" \
+    --rna_central_z_value=13271.415730
+    --jackhmmer_n_cpu=2 \
+    --jackhmmer_max_parallel_shards=16 \
+    --nhmmer_n_cpu=2 \
+    --nhmmer_max_parallel_shards=16
+```
+
+This run will utilize (2 CPUs) × (16 max parallel shards) × (4 protein dbs
+searched in parallel) = 128 cores for each protein chain, and (2 CPUs) × (16 max
+parallel shards) × (3 RNA dbs searched in parallel) = 96 cores for each RNA
+chain. Make sure to tune:
+
+*   the Jackhmmer/Nhmmer number of CPUs,
+*   the maximum number of shards searched in parallel,
+*   and the number of shards for each database
+
+so that the memory bandwidth and CPUs on your machine are optimally utilized.
+You should aim for consistent shard sizes across all databases (so e.g. if
+database A is split into 16 shards and is 3× smaller than database B, database B
+should be split into 3 × 16 = 48 shards).
+
+## Model Inference
+
+Table 8 in the Supplementary Information of the
+[AlphaFold 3 paper](https://nature.com/articles/s41586-024-07487-w) provides
+compile-free inference timings for AlphaFold 3 when configured to run on 16
+NVIDIA A100s, with 40 GB of memory per device. In contrast, this repository
+supports running AlphaFold 3 on a single NVIDIA A100 with 80 GB of memory in a
+configuration optimised to maximise throughput.
+
+We compare compile-free inference timings of these two setups in the table below
+using GPU seconds (i.e. multiplying by 16 when using 16 A100s). The setup in
+this repository is more efficient (by at least 2×) across all token sizes,
+indicating its suitability for high-throughput applications.
+
+Num Tokens | 1 A100 80 GB (GPU secs) | 16 A100 40 GB (GPU secs) | Improvement
+:--------- | ----------------------: | -----------------------: | ----------:
+1024       | 62                      | 352                      | 5.7×
+2048       | 275                     | 1136                     | 4.1×
+3072       | 703                     | 2016                     | 2.9×
+4096       | 1434                    | 3648                     | 2.5×
+5120       | 2547                    | 5552                     | 2.2×
 
 ## Accelerator Hardware Requirements
 

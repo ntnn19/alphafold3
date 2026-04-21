@@ -16,6 +16,7 @@ readonly db_dir=${1:-$HOME/public_databases}
 for cmd in wget tar zstd ; do
   if ! command -v "${cmd}" > /dev/null 2>&1; then
     echo "${cmd} is not installed. Please install it."
+    exit 1
   fi
 done
 

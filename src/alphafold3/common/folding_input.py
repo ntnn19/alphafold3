@@ -27,6 +27,7 @@ from alphafold3 import structure
 from alphafold3.constants import chemical_components
 from alphafold3.constants import mmcif_names
 from alphafold3.constants import residue_names
+from alphafold3.constants import uniprot_names
 from alphafold3.cpp import cif_dict
 from alphafold3.structure import mmcif as mmcif_lib
 import rdkit.Chem as rd_chem
@@ -131,6 +132,7 @@ class ProteinChain:
       '_paired_msa',
       '_unpaired_msa',
       '_templates',
+      '_is_sequence_a_uniprot_id',
   )
 
   def __init__(
@@ -143,6 +145,7 @@ class ProteinChain:
       paired_msa: str | None = None,
       unpaired_msa: str | None = None,
       templates: Sequence[Template] | None = None,
+      _is_sequence_a_uniprot_id: bool | str = False,
   ):
     """Initializes a single protein chain input.
 
@@ -166,7 +169,9 @@ class ProteinChain:
         field is unset and must be filled in by the data pipeline before
         featurisation. The list can be empty or contain up to 20 templates.
     """
-    if not all(res.isalpha() for res in sequence):
+    match = re.search(uniprot_names.UNIPROT_ACCESSION_PATTERN, sequence)
+
+    if not all(res.isalpha() for res in sequence) and not match:
       raise ValueError(f'Protein must contain only letters, got "{sequence}"')
     if any(not 0 < mod[1] <= len(sequence) for mod in ptms):
       raise ValueError(f'Invalid protein modification index: {ptms}')
@@ -182,6 +187,7 @@ class ProteinChain:
     self._paired_msa = paired_msa
     self._unpaired_msa = unpaired_msa
     self._templates = tuple(templates) if templates is not None else None
+    self._is_sequence_a_uniprot_id = True if match is not None else False
 
   @property
   def id(self) -> str:
@@ -193,10 +199,12 @@ class ProteinChain:
 
     Uses 'X' for all unknown residues.
     """
-    return ''.join([
-        residue_names.letters_three_to_one(r, default='X')
-        for r in self.to_ccd_sequence()
-    ])
+    if not self._is_sequence_a_uniprot_id:
+        return ''.join([
+            residue_names.letters_three_to_one(r, default='X')
+            for r in self.to_ccd_sequence()
+        ])
+    return self._sequence
 
   @property
   def ptms(self) -> Sequence[tuple[str, int]]:

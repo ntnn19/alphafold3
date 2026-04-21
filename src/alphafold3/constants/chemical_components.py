@@ -14,9 +14,9 @@ from collections.abc import ItemsView, Iterator, KeysView, Mapping, Sequence, Va
 import dataclasses
 import functools
 import os
-import pickle
 
 from alphafold3.common import resources
+from alphafold3.common import safe_pickle
 from alphafold3.cpp import cif_dict
 
 
@@ -31,7 +31,7 @@ def _load_ccd_pickle_cached(
 ) -> dict[str, Mapping[str, Sequence[str]]]:
   """Loads the CCD pickle file and caches it so that it is only loaded once."""
   with open(path, 'rb') as f:
-    return pickle.loads(f.read())
+    return safe_pickle.load(f)
 
 
 class Ccd(Mapping[str, Mapping[str, Sequence[str]]]):

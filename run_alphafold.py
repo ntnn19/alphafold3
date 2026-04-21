@@ -41,7 +41,7 @@ from alphafold3.constants import chemical_components
 import alphafold3.cpp
 from alphafold3.data import featurisation
 from alphafold3.data import pipeline
-from alphafold3.jax.attention import attention
+from alphafold3.data.tools import shards
 from alphafold3.model import features
 from alphafold3.model import model
 from alphafold3.model import params
@@ -51,7 +51,8 @@ import haiku as hk
 import jax
 from jax import numpy as jnp
 import numpy as np
-import tarfile
+import tokamax
+
 
 _HOME_DIR = pathlib.Path(os.environ.get('HOME'))
 _DEFAULT_MODEL_DIR = _HOME_DIR / 'models'
@@ -132,15 +133,36 @@ _SMALL_BFD_DATABASE_PATH = flags.DEFINE_string(
     '${DB_DIR}/bfd-first_non_consensus_sequences.fasta',
     'Small BFD database path, used for protein MSA search.',
 )
+_SMALL_BFD_Z_VALUE = flags.DEFINE_integer(
+    'small_bfd_z_value',
+    None,
+    'The Z-value representing the database size in number of sequences for'
+    ' E-value calculation. Must be set for sharded databases.',
+    lower_bound=0,
+)
 _MGNIFY_DATABASE_PATH = flags.DEFINE_string(
     'mgnify_database_path',
     '${DB_DIR}/mgy_clusters_2022_05.fa',
     'Mgnify database path, used for protein MSA search.',
 )
+_MGNIFY_Z_VALUE = flags.DEFINE_integer(
+    'mgnify_z_value',
+    None,
+    'The Z-value representing the database size in number of sequences for'
+    ' E-value calculation. Must be set for sharded databases.',
+    lower_bound=0,
+)
 _UNIPROT_CLUSTER_ANNOT_DATABASE_PATH = flags.DEFINE_string(
     'uniprot_cluster_annot_database_path',
     '${DB_DIR}/uniprot_all_2021_04.fa',
     'UniProt database path, used for protein paired MSA search.',
+)
+_UNIPROT_CLUSTER_ANNOT_Z_VALUE = flags.DEFINE_integer(
+    'uniprot_cluster_annot_z_value',
+    None,
+    'The Z-value representing the database size in number of sequences for'
+    ' E-value calculation. Must be set for sharded databases.',
+    lower_bound=0,
 )
 _UNIREF90_DATABASE_PATH = flags.DEFINE_string(
     'uniref90_database_path',
@@ -148,20 +170,48 @@ _UNIREF90_DATABASE_PATH = flags.DEFINE_string(
     'UniRef90 database path, used for MSA search. The MSA obtained by '
     'searching it is used to construct the profile for template search.',
 )
+_UNIREF90_Z_VALUE = flags.DEFINE_integer(
+    'uniref90_z_value',
+    None,
+    'The Z-value representing the database size in number of sequences for'
+    ' E-value calculation. Must be set for sharded databases.',
+    lower_bound=0,
+)
 _NTRNA_DATABASE_PATH = flags.DEFINE_string(
     'ntrna_database_path',
     '${DB_DIR}/nt_rna_2023_02_23_clust_seq_id_90_cov_80_rep_seq.fasta',
     'NT-RNA database path, used for RNA MSA search.',
+)
+_NTRNA_Z_VALUE = flags.DEFINE_float(
+    'ntrna_z_value',
+    None,
+    'The Z-value representing the database size in megabases for E-value'
+    ' calculation. Must be set for sharded databases.',
+    lower_bound=0.0,
 )
 _RFAM_DATABASE_PATH = flags.DEFINE_string(
     'rfam_database_path',
     '${DB_DIR}/rfam_14_9_clust_seq_id_90_cov_80_rep_seq.fasta',
     'Rfam database path, used for RNA MSA search.',
 )
+_RFAM_Z_VALUE = flags.DEFINE_float(
+    'rfam_z_value',
+    None,
+    'The Z-value representing the database size in megabases for E-value'
+    ' calculation. Must be set for sharded databases.',
+    lower_bound=0.0,
+)
 _RNA_CENTRAL_DATABASE_PATH = flags.DEFINE_string(
     'rna_central_database_path',
     '${DB_DIR}/rnacentral_active_seq_id_90_cov_80_linclust.fasta',
     'RNAcentral database path, used for RNA MSA search.',
+)
+_RNA_CENTRAL_Z_VALUE = flags.DEFINE_float(
+    'rna_central_z_value',
+    None,
+    'The Z-value representing the database size in megabases for E-value'
+    ' calculation. Must be set for sharded databases.',
+    lower_bound=0.0,
 )
 _PDB_DATABASE_PATH = flags.DEFINE_string(
     'pdb_database_path',
@@ -183,6 +233,14 @@ _JACKHMMER_N_CPU = flags.DEFINE_integer(
     ' above 8 CPUs provides very little additional speedup.',
     lower_bound=0,
 )
+_JACKHMMER_MAX_PARALLEL_SHARDS = flags.DEFINE_integer(
+    'jackhmmer_max_parallel_shards',
+    None,
+    'Maximum number of shards to search against in parallel. If unset, one'
+    ' Jackhmmer instance will be run per shard. Only applicable if the'
+    ' database is sharded.',
+    lower_bound=1,
+)
 _NHMMER_N_CPU = flags.DEFINE_integer(
     'nhmmer_n_cpu',
     # Unfortunately, os.process_cpu_count() is only available in Python 3.13+.
@@ -190,6 +248,14 @@ _NHMMER_N_CPU = flags.DEFINE_integer(
     'Number of CPUs to use for Nhmmer. Defaults to min(cpu_count, 8). Going'
     ' above 8 CPUs provides very little additional speedup.',
     lower_bound=0,
+)
+_NHMMER_MAX_PARALLEL_SHARDS = flags.DEFINE_integer(
+    'nhmmer_max_parallel_shards',
+    None,
+    'Maximum number of shards to search against in parallel. If unset, one'
+    ' Nhmmer instance will be run per shard. Only applicable if the'
+    ' database is sharded.',
+    lower_bound=1,
 )
 
 # Data pipeline configuration.
@@ -303,16 +369,31 @@ _FORCE_OUTPUT_DIR = flags.DEFINE_bool(
     ' and is non-empty. Useful to set this to True to run the data pipeline and'
     ' the inference separately, but use the same output directory.',
 )
-_COMPRESS_OUTPUT_DIR = flags.DEFINE_bool(
-    'compress_output_dir',
+_COMPRESS_LARGE_OUTPUT_FILES = flags.DEFINE_bool(
+    'compress_large_output_files',
     False,
-    'If True, compress the entire output directory into a single .tar.gz archive '
-    'after all outputs are written, and remove the uncompressed version.',
+    'If True, compresses the output mmCIF and confidences JSON files (the two'
+    ' largest files) using zstandard. Note that embeddings and distogram, if'
+    ' saved, are already stored in a compressed format.',
 )
+_USE_AFDB_MSA = flags.DEFINE_bool(
+    'use_afdb_msa',
+    False,
+    'If True, adds msa from AlphaFoldDB to protein chains that perfectly match an entry in AlphaFoldDB.'
+    'To use this option, the user must set the UniProt accession as the sequence of the chain.'
+)
+_AFDB_VERSION = flags.DEFINE_integer(
+    'afdb_version',
+    6,
+    'Specifies which version of AlphaFoldDB to use when --use_afdb_msa is True.'
+    'Ignored if --use_afdb_msa is False.'
+)
+
+>>>>>>> 1d5feaee4ec50ba632daec3d1cde84edb3a2b111
 
 def make_model_config(
     *,
-    flash_attention_implementation: attention.Implementation = 'triton',
+    flash_attention_implementation: tokamax.DotProductAttentionImplementation = 'triton',
     num_diffusion_samples: int = 5,
     num_recycles: int = 10,
     return_embeddings: bool = False,
@@ -533,7 +614,7 @@ def write_outputs(
     all_inference_results: Sequence[ResultsForSeed],
     output_dir: os.PathLike[str] | str,
     job_name: str,
-    compress_output_dir: bool = False,
+    compress_large_output_files: bool = False,
 ) -> None:
   """Writes outputs to the specified output directory."""
   ranking_scores = []
@@ -553,6 +634,7 @@ def write_outputs(
           inference_result=result,
           output_dir=sample_dir,
           name=f'{job_name}_seed-{seed}_sample-{sample_idx}',
+          compress=compress_large_output_files,
       )
       ranking_score = float(result.metadata['ranking_score'])
       ranking_scores.append((seed, sample_idx, ranking_score))
@@ -584,6 +666,7 @@ def write_outputs(
         output_dir=output_dir,
         terms_of_use=output_terms,
         name=job_name,
+        compress=compress_large_output_files,
     )
     with open(
         os.path.join(output_dir, f'{job_name}_ranking_scores.csv'), 'wt'
@@ -619,7 +702,11 @@ def replace_db_dir(path_with_db_dir: str, db_dirs: Sequence[str]) -> str:
     raise FileNotFoundError(
         f'{path_with_db_dir} with ${{DB_DIR}} not found in any of {db_dirs}.'
     )
-  if not os.path.exists(path_with_db_dir):
+  if (sharded_paths := shards.get_sharded_paths(path_with_db_dir)) is not None:
+    db_exists = all(os.path.exists(p) for p in sharded_paths)
+  else:
+    db_exists = os.path.exists(path_with_db_dir)
+  if not db_exists:
     raise FileNotFoundError(f'{path_with_db_dir} does not exist.')
   return path_with_db_dir
 
@@ -628,6 +715,7 @@ def replace_db_dir(path_with_db_dir: str, db_dirs: Sequence[str]) -> str:
 def process_fold_input(
     fold_input: folding_input.Input,
     data_pipeline_config: pipeline.DataPipelineConfig | None,
+    *,
     model_runner: None,
     output_dir: os.PathLike[str] | str,
     buckets: Sequence[int] | None = None,
@@ -635,7 +723,7 @@ def process_fold_input(
     conformer_max_iterations: int | None = None,
     resolve_msa_overlaps: bool = True,
     force_output_dir: bool = False,
-    compress_output_dir: bool = False
+    compress_large_output_files: bool = False,
 ) -> folding_input.Input:
   ...
 
@@ -644,6 +732,7 @@ def process_fold_input(
 def process_fold_input(
     fold_input: folding_input.Input,
     data_pipeline_config: pipeline.DataPipelineConfig | None,
+    *,
     model_runner: ModelRunner,
     output_dir: os.PathLike[str] | str,
     buckets: Sequence[int] | None = None,
@@ -651,6 +740,7 @@ def process_fold_input(
     conformer_max_iterations: int | None = None,
     resolve_msa_overlaps: bool = True,
     force_output_dir: bool = False,
+    compress_large_output_files: bool = False,
 ) -> Sequence[ResultsForSeed]:
   ...
 
@@ -658,6 +748,7 @@ def process_fold_input(
 def process_fold_input(
     fold_input: folding_input.Input,
     data_pipeline_config: pipeline.DataPipelineConfig | None,
+    *,
     model_runner: ModelRunner | None,
     output_dir: os.PathLike[str] | str,
     buckets: Sequence[int] | None = None,
@@ -665,6 +756,7 @@ def process_fold_input(
     conformer_max_iterations: int | None = None,
     resolve_msa_overlaps: bool = True,
     force_output_dir: bool = False,
+    compress_large_output_files: bool = False,
 ) -> folding_input.Input | Sequence[ResultsForSeed]:
   """Runs data pipeline and/or inference on a single fold input.
 
@@ -695,6 +787,8 @@ def process_fold_input(
       existing one is non-empty. Instead use the existing output directory and
       potentially overwrite existing files. If False, create a new timestamped
       output directory instead if the existing one is non-empty.
+    compress_large_output_files: If True, compress large output files (mmCIF and
+      confidences JSON) using zstandard.
 
   Returns:
     The processed fold input, or the inference results for each seed.
@@ -751,7 +845,7 @@ def process_fold_input(
         all_inference_results=all_inference_results,
         output_dir=output_dir,
         job_name=fold_input.sanitised_name(),
-        compress_output_dir=compress_output_dir
+        compress_large_output_files=compress_large_output_files,
     )
     output = all_inference_results
 
@@ -847,19 +941,30 @@ def main(_):
         hmmsearch_binary_path=_HMMSEARCH_BINARY_PATH.value,
         hmmbuild_binary_path=_HMMBUILD_BINARY_PATH.value,
         small_bfd_database_path=expand_path(_SMALL_BFD_DATABASE_PATH.value),
+        small_bfd_z_value=_SMALL_BFD_Z_VALUE.value,
         mgnify_database_path=expand_path(_MGNIFY_DATABASE_PATH.value),
+        mgnify_z_value=_MGNIFY_Z_VALUE.value,
         uniprot_cluster_annot_database_path=expand_path(
             _UNIPROT_CLUSTER_ANNOT_DATABASE_PATH.value
         ),
+        uniprot_cluster_annot_z_value=_UNIPROT_CLUSTER_ANNOT_Z_VALUE.value,
         uniref90_database_path=expand_path(_UNIREF90_DATABASE_PATH.value),
+        uniref90_z_value=_UNIREF90_Z_VALUE.value,
         ntrna_database_path=expand_path(_NTRNA_DATABASE_PATH.value),
+        ntrna_z_value=_NTRNA_Z_VALUE.value,
         rfam_database_path=expand_path(_RFAM_DATABASE_PATH.value),
+        rfam_z_value=_RFAM_Z_VALUE.value,
         rna_central_database_path=expand_path(_RNA_CENTRAL_DATABASE_PATH.value),
+        rna_central_z_value=_RNA_CENTRAL_Z_VALUE.value,
         pdb_database_path=expand_path(_PDB_DATABASE_PATH.value),
         seqres_database_path=expand_path(_SEQRES_DATABASE_PATH.value),
         jackhmmer_n_cpu=_JACKHMMER_N_CPU.value,
+        jackhmmer_max_parallel_shards=_JACKHMMER_MAX_PARALLEL_SHARDS.value,
         nhmmer_n_cpu=_NHMMER_N_CPU.value,
+        nhmmer_max_parallel_shards=_NHMMER_MAX_PARALLEL_SHARDS.value,
         max_template_date=max_template_date,
+        use_afdb_msa=_USE_AFDB_MSA.value,
+        afdb_version=_AFDB_VERSION.value,
     )
   else:
     data_pipeline_config = None
@@ -875,7 +980,8 @@ def main(_):
     model_runner = ModelRunner(
         config=make_model_config(
             flash_attention_implementation=typing.cast(
-                attention.Implementation, _FLASH_ATTENTION_IMPLEMENTATION.value
+                tokamax.DotProductAttentionImplementation,
+                _FLASH_ATTENTION_IMPLEMENTATION.value,
             ),
             num_diffusion_samples=_NUM_DIFFUSION_SAMPLES.value,
             num_recycles=_NUM_RECYCLES.value,
@@ -906,7 +1012,7 @@ def main(_):
         conformer_max_iterations=_CONFORMER_MAX_ITERATIONS.value,
         resolve_msa_overlaps=_RESOLVE_MSA_OVERLAPS.value,
         force_output_dir=_FORCE_OUTPUT_DIR.value,
-        compress_output_dir=_COMPRESS_OUTPUT_DIR.value,
+        compress_large_output_files=_COMPRESS_LARGE_OUTPUT_FILES.value,
     )
     num_fold_inputs += 1
 

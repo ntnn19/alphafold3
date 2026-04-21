@@ -1328,9 +1328,10 @@ def get_tables(
   if cif_update := _generate_required_tables_if_missing(cif):
     cif = cif.copy_and_update(cif_update)
 
-  # Resolve alt-locs, selecting only a single option for each residue. Also
-  # computes the layout, which defines where chain and residue boundaries are.
-  atom_site_all_models, layout = mmcif_utils.filter(
+  # The wanted_chain_ids include chain IDs that are not necessarily present in
+  # the _atom_site table, because we want to be able to read Structures with
+  # chains consist of only unresolved residues.
+  atom_site_all_models, wanted_chain_ids, layout = mmcif_utils.filter(
       cif,
       include_nucleotides=True,
       include_ligands=True,
@@ -1456,12 +1457,7 @@ def get_tables(
   if not include_other and poly_seq_mask:
     # Mask filtered-out residues so that they are not treated as missing.
     # Instead, we don't want them included in the chains/residues tables at all.
-    keep_mask = string_array.remap(
-        poly_seq_asym_ids,
-        mapping={cid: True for cid in resolved_chain_ids},
-        default_value=False,
-        inplace=False,
-    ).astype(bool)
+    keep_mask = string_array.isin(poly_seq_asym_ids, wanted_chain_ids)
     poly_seq_mask &= keep_mask
 
   chain_res_builder.add_residues(

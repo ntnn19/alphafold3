@@ -447,9 +447,8 @@ class WholePdbPipeline:
           and np.isnan(np.sum(value))
       ):
         raise NanDataError(
-            'The output of the data pipeline contained nans. '
-            f'nan feature: {name}, fold input name: {fold_input.name}, '
-            f'random_seed {random_seed}'
+            f'Data pipeline output for {logging_name=} contains NaNs. NaN'
+            f' feature: {name}'
         )
 
     return np_example

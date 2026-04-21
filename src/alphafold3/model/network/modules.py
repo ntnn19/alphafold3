@@ -14,8 +14,6 @@ from collections.abc import Sequence
 from typing import Literal
 
 from alphafold3.common import base_config
-from alphafold3.jax.attention import attention
-from alphafold3.jax.gated_linear_unit import gated_linear_unit
 from alphafold3.model import model_config
 from alphafold3.model.components import haiku_modules as hm
 from alphafold3.model.components import mapping
@@ -23,6 +21,7 @@ from alphafold3.model.network import diffusion_transformer
 import haiku as hk
 import jax
 import jax.numpy as jnp
+import tokamax
 
 
 def get_shard_size(
@@ -68,8 +67,8 @@ class TransitionBlock(hk.Module):
           name='transition1',
       )
       weights = jnp.reshape(weights, (len(weights), 2, num_intermediate))
-      c = gated_linear_unit.gated_linear_unit(
-          x=act, weight=weights, implementation=None, activation=jax.nn.swish
+      c = tokamax.gated_linear_unit(
+          x=act, weights=weights, activation=jax.nn.swish
       )
     else:
       act = hm.Linear(
@@ -172,7 +171,7 @@ class GridSelfAttention(hk.Module):
     # Dot product attention requires the bias term to have a batch dimension.
     bias = jnp.expand_dims(bias, 0)
 
-    weighted_avg = attention.dot_product_attention(
+    weighted_avg = tokamax.dot_product_attention(
         q,
         k,
         v,
@@ -289,11 +288,8 @@ class TriangleMultiplication(hk.Module):
       )
       weights_glu = jnp.stack([weights_gate, weights_projection], axis=1)
 
-      projection = gated_linear_unit.gated_linear_unit(
-          x=act,
-          weight=weights_glu,
-          activation=jax.nn.sigmoid,
-          implementation=None,
+      projection = tokamax.gated_linear_unit(
+          act, weights_glu, activation=jax.nn.sigmoid
       )
       projection = jnp.transpose(projection, (2, 0, 1))
       projection *= mask
