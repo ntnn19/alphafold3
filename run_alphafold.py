@@ -376,20 +376,7 @@ _COMPRESS_LARGE_OUTPUT_FILES = flags.DEFINE_bool(
     ' largest files) using zstandard. Note that embeddings and distogram, if'
     ' saved, are already stored in a compressed format.',
 )
-_USE_AFDB_MSA = flags.DEFINE_bool(
-    'use_afdb_msa',
-    False,
-    'If True, adds msa from AlphaFoldDB to protein chains that perfectly match an entry in AlphaFoldDB.'
-    'To use this option, the user must set the UniProt accession as the sequence of the chain.'
-)
-_AFDB_VERSION = flags.DEFINE_integer(
-    'afdb_version',
-    6,
-    'Specifies which version of AlphaFoldDB to use when --use_afdb_msa is True.'
-    'Ignored if --use_afdb_msa is False.'
-)
 
->>>>>>> 1d5feaee4ec50ba632daec3d1cde84edb3a2b111
 
 def make_model_config(
     *,
@@ -620,11 +607,12 @@ def write_outputs(
   ranking_scores = []
   max_ranking_score = None
   max_ranking_result = None
+
   output_terms = (
       pathlib.Path(alphafold3.cpp.__file__).parent / 'OUTPUT_TERMS_OF_USE.md'
   ).read_text()
-  os.makedirs(output_dir, exist_ok=True)
 
+  os.makedirs(output_dir, exist_ok=True)
   for results_for_seed in all_inference_results:
     seed = results_for_seed.seed
     for sample_idx, result in enumerate(results_for_seed.inference_results):
@@ -660,14 +648,17 @@ def write_outputs(
       with open(distogram_path, 'wb') as f:
         np.savez_compressed(f, distogram=distogram.astype(np.float16))
 
-  if max_ranking_result is not None:
+  if max_ranking_result is not None:  # True iff ranking_scores non-empty.
     post_processing.write_output(
         inference_result=max_ranking_result,
         output_dir=output_dir,
+        # The output terms of use are the same for all seeds/samples.
         terms_of_use=output_terms,
         name=job_name,
         compress=compress_large_output_files,
     )
+    # Save csv of ranking scores with seeds and sample indices, to allow easier
+    # comparison of ranking scores across different runs.
     with open(
         os.path.join(output_dir, f'{job_name}_ranking_scores.csv'), 'wt'
     ) as f:
@@ -675,21 +666,6 @@ def write_outputs(
       writer.writerow(['seed', 'sample', 'ranking_score'])
       writer.writerows(ranking_scores)
 
-  #prompt used for chatGPT: "modfiy the following function to include a flag for compressing the output dir.
-  # keep the number of changes to minimum"
-  # Compress and remove original directory if successful.
-  if compress_output_dir:
-    archive_path = f"{output_dir}.tar.gz"
-    try:
-      with tarfile.open(archive_path, "w:gz") as tar:
-        tar.add(output_dir, arcname=os.path.basename(output_dir))
-      if os.path.exists(archive_path) and os.path.getsize(archive_path) > 0:
-        shutil.rmtree(output_dir)
-        print(f"Compressed outputs to {archive_path} and removed {output_dir}")
-      else:
-        print(f"⚠️ Compression failed — keeping uncompressed directory {output_dir}")
-    except Exception as e:
-      print(f"⚠️ Error during compression: {e}. Keeping {output_dir}")
 
 def replace_db_dir(path_with_db_dir: str, db_dirs: Sequence[str]) -> str:
   """Replaces the DB_DIR placeholder in a path with the given DB_DIR."""
@@ -963,8 +939,6 @@ def main(_):
         nhmmer_n_cpu=_NHMMER_N_CPU.value,
         nhmmer_max_parallel_shards=_NHMMER_MAX_PARALLEL_SHARDS.value,
         max_template_date=max_template_date,
-        use_afdb_msa=_USE_AFDB_MSA.value,
-        afdb_version=_AFDB_VERSION.value,
     )
   else:
     data_pipeline_config = None

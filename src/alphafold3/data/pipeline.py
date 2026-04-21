@@ -9,17 +9,16 @@
 # https://github.com/google-deepmind/alphafold3/blob/main/WEIGHTS_TERMS_OF_USE.md
 
 """Functions for running the MSA and template tools for the AlphaFold model."""
+
 from concurrent import futures
 import dataclasses
 import datetime
 import functools
 import logging
 import time
-import re
-import requests
 
 from alphafold3.common import folding_input
-from alphafold3.constants import mmcif_names, uniprot_names
+from alphafold3.constants import mmcif_names
 from alphafold3.data import msa
 from alphafold3.data import msa_config
 from alphafold3.data import structure_stores
@@ -289,16 +288,12 @@ class DataPipelineConfig:
 
   max_template_date: datetime.date
 
-  # New flags to control AlphaFoldDB MSA usage
-  use_afdb_msa: bool = False
-  afdb_version: int = 6
 
 class DataPipeline:
   """Runs the alignment tools and assembles the input features."""
 
   def __init__(self, data_pipeline_config: DataPipelineConfig):
     """Initializes the data pipeline with default configurations."""
-    self.data_pipeline_config = data_pipeline_config
     self._uniref90_msa_config = msa_config.RunConfig(
         config=msa_config.JackhmmerConfig(
             binary_path=data_pipeline_config.jackhmmer_binary_path,
@@ -466,37 +461,11 @@ class DataPipeline:
     has_unpaired_msa = chain.unpaired_msa is not None
     has_paired_msa = chain.paired_msa is not None
     has_templates = chain.templates is not None
-    match = re.search(uniprot_names.UNIPROT_ACCESSION_PATTERN,chain.sequence) if self.data_pipeline_config.use_afdb_msa else None
-    afdb_msa = None
-    query_sequence = chain.sequence
-    if match:
-        logging.info(
-            'Attempting to retrieve an unpaired MSA for chain %s from AlphaFoldDB.',
-            chain.id,
-        )
-        uniprot_accession = match.group(0)
-        afdb_version = self.data_pipeline_config.afdb_version
-        url = f"https://alphafold.ebi.ac.uk/files/msa/AF-{uniprot_accession}-F1-msa_v{afdb_version}.a3m"
-        if afdb_version not in list(range(5,6)):
-            raise ValueError(
-                f'Invalid AlphaFoldDB version {afdb_version} for protein chain {chain.id}.'
-                ' Only versions >= 5 are supported. Please set `afdb_version` in your'
-                ' JSON file accordingly.'
-            )
-        response = requests.get(url, allow_redirects=True, timeout=30)
-        if response.status_code != 200:
-            raise RuntimeError(
-                f'AlphaFoldDB MSA for protein chain {chain.id} at URL {url} is not available..'
-                f' (HTTP status code: {response.status_code}).'
-            )
-        has_unpaired_msa = True
-        afdb_msa = response.text
-        query_sequence = "".join(line.upper() for line in afdb_msa.splitlines()[1] if not line.startswith(">")).split(">")[0]
 
     if not has_unpaired_msa and not has_paired_msa and not chain.templates:
       # MSA None - search. Templates either [] - don't search, or None - search.
       unpaired_msa, paired_msa, template_hits = _get_protein_msa_and_templates(
-          sequence=query_sequence,
+          sequence=chain.sequence,
           run_template_search=not has_templates,  # Skip template search if [].
           uniref90_msa_config=self._uniref90_msa_config,
           mgnify_msa_config=self._mgnify_msa_config,
@@ -517,13 +486,13 @@ class DataPipeline:
     elif has_unpaired_msa and has_paired_msa and not has_templates:
       # Has MSA, but doesn't have templates. Search for templates only.
       empty_msa = msa.Msa.from_empty(
-          query_sequence=query_sequence,
+          query_sequence=chain.sequence,
           chain_poly_type=mmcif_names.PROTEIN_CHAIN,
       ).to_a3m()
-      unpaired_msa = afdb_msa or chain.unpaired_msa or empty_msa
+      unpaired_msa = chain.unpaired_msa or empty_msa
       paired_msa = chain.paired_msa or empty_msa
       template_hits = _get_protein_templates(
-          sequence=query_sequence,
+          sequence=chain.sequence,
           input_msa_a3m=unpaired_msa,
           run_template_search=True,
           templates_config=self._templates_config,
@@ -558,16 +527,16 @@ class DataPipeline:
       if not chain.templates:
         logging.info('Using no templates for protein chain %s', chain.id)
       empty_msa = msa.Msa.from_empty(
-          query_sequence=query_sequence,
+          query_sequence=chain.sequence,
           chain_poly_type=mmcif_names.PROTEIN_CHAIN,
       ).to_a3m()
-      unpaired_msa = afdb_msa or chain.unpaired_msa or empty_msa
+      unpaired_msa = chain.unpaired_msa or empty_msa
       paired_msa = chain.paired_msa or empty_msa
       templates = chain.templates
 
     return folding_input.ProteinChain(
         id=chain.id,
-        sequence=query_sequence,
+        sequence=chain.sequence,
         ptms=chain.ptms,
         unpaired_msa=unpaired_msa,
         paired_msa=paired_msa,
