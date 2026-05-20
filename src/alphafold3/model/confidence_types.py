@@ -196,6 +196,9 @@ class StructureConfidenceSummary:
    chain_pair_iptm: [num_chains, num_chains] Chain pair ipTM.
    chain_ptm: [num_chains] Chain pTM.
    chain_iptm: [num_chains] Mean cross chain ipTM for a chain.
+   token_chain_ids: List of chain IDs for each token.
+   unique_chain_ids: List of unique chain IDs in the structure.
+   chain_descriptions: Mapping from chain_id to textual description.
   """
 
   ptm: float
@@ -207,12 +210,27 @@ class StructureConfidenceSummary:
   chain_pair_iptm: np.ndarray
   chain_ptm: np.ndarray
   chain_iptm: np.ndarray
+  token_chain_ids: list[str]
+  unique_chain_ids: list[str]
+  chain_descriptions: dict[str, str]  # Mapping from chain_id to textual description
 
   @classmethod
   def from_inference_result(
       cls, inference_result: model.InferenceResult
   ) -> Self:
     """Returns a new instance based on a given inference result."""
+    # Extract unique chain IDs and descriptions
+    unique_chain_ids = list(sorted(set(token_id for token_id in inference_result.metadata['token_chain_ids'])))
+
+    # Extract chain descriptions from the structure
+    chain_descriptions = {}
+    if inference_result.predicted_structure is not None:
+        for chain_info in inference_result.predicted_structure.iter_chains():
+            chain_id = chain_info['chain_id']
+            entity_desc = chain_info.get('chain_entity_desc', '')
+            if entity_desc and entity_desc != '?':
+                chain_descriptions[chain_id] = entity_desc
+
     return cls(
         ptm=float(inference_result.metadata['ptm']),
         iptm=float(inference_result.metadata['iptm']),
@@ -225,6 +243,12 @@ class StructureConfidenceSummary:
         chain_pair_iptm=inference_result.metadata['chain_pair_iptm'],
         chain_ptm=inference_result.metadata['iptm_ichain'],
         chain_iptm=inference_result.metadata['iptm_xchain'],
+        token_chain_ids=[
+            str(token_id)
+            for token_id in inference_result.metadata['token_chain_ids']
+        ],
+        unique_chain_ids=unique_chain_ids,
+        chain_descriptions=chain_descriptions,
     )
 
   @classmethod
@@ -242,7 +266,44 @@ class StructureConfidenceSummary:
         rounded_data = np.round(data, decimals=2)
       return rounded_data
 
-    return _dump_json(jax.tree.map(convert, dataclasses.asdict(self)), indent=1)
+    basic_dict = dataclasses.asdict(self)
+    converted_dict = jax.tree.map(convert, basic_dict)
+
+    unique_chain_ids = converted_dict.pop('unique_chain_ids')
+
+    # Create annotated per-chain scores
+    annotated_dict = {}
+
+    # Annotate per-chain scores with optional textual descriptions
+    annotated_dict['chain_scores'] = []
+    for chain_id, ptm, iptm in zip(unique_chain_ids, self.chain_ptm, self.chain_iptm):
+        chain_score = {
+            'chain_id': chain_id,
+            'chain_ptm': float(ptm),
+            'chain_iptm': float(iptm)
+        }
+        # Add optional textual description if available
+        if chain_id in self.chain_descriptions and self.chain_descriptions[chain_id]:
+            chain_score['chain_description'] = self.chain_descriptions[chain_id]
+        annotated_dict['chain_scores'].append(chain_score)
+
+    annotated_dict['chain_pair_scores'] = []
+    num_chains = len(unique_chain_ids)
+    for i in range(num_chains):
+        for j in range(num_chains):
+            annotated_dict['chain_pair_scores'].append({
+                'chain_id_i': unique_chain_ids[i],
+                'chain_id_j': unique_chain_ids[j],
+                'pae_min': float(self.chain_pair_pae_min[i][j]),
+                'iptm': float(self.chain_pair_iptm[i][j])
+            })
+
+    for key, value in converted_dict.items():
+        annotated_dict[key] = value
+
+    annotated_dict['unique_chain_ids'] = unique_chain_ids
+
+    return _dump_json(annotated_dict, indent=1)
 
 
 @dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
