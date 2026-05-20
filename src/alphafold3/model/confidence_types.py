@@ -274,8 +274,16 @@ class StructureConfidenceSummary:
     basic_dict = dataclasses.asdict(self)
     converted_dict = jax.tree.map(convert, basic_dict)
 
-    # Create the annotated output dictionary matching expected_output.json
+    # chain_descriptions legend: only include chains that have a meaningful
+    # description (non-empty, not the mmCIF placeholder '.').
+    chain_descriptions_out = {
+        cid: desc
+        for cid, desc in self.chain_descriptions.items()
+        if desc and desc != '.'
+    }
+
     annotated_dict = {
+        'chain_descriptions': chain_descriptions_out,
         'ptm': float(converted_dict['ptm']),
         'iptm': float(converted_dict['iptm']),
         'ranking_score': float(converted_dict['ranking_score']),
@@ -287,36 +295,22 @@ class StructureConfidenceSummary:
         'chain_pair_pae_min': {},
     }
 
-    # Build display labels: "{chain_id}_{description}" when a non-empty
-    # description exists, otherwise just the chain_id.
-    def _make_label(chain_id: str) -> str:
-      desc = self.chain_descriptions.get(chain_id, '')
-      if desc and desc != '.':
-        return f'{chain_id}_{desc}'
-      return chain_id
-
-    # Populate chain-level scores
-    chain_names = []
-    for i, chain_id in enumerate(self.unique_chain_ids):
-        chain_name = _make_label(chain_id)
-        chain_names.append(chain_name)
-        annotated_dict['chain_ptm'][chain_name] = float(converted_dict['chain_ptm'][i])
-        annotated_dict['chain_iptm'][chain_name] = float(converted_dict['chain_iptm'][i])
-
-    # Initialize nested dictionaries for chain pair scores
-    for chain_name_i in chain_names:
-        annotated_dict['chain_pair_iptm'][chain_name_i] = {}
-        annotated_dict['chain_pair_pae_min'][chain_name_i] = {}
-
-    # Populate chain pair scores
-    for i, chain_name_i in enumerate(chain_names):
-        for j, chain_name_j in enumerate(chain_names):
-            annotated_dict['chain_pair_iptm'][chain_name_i][chain_name_j] = float(
-                converted_dict['chain_pair_iptm'][i][j]
-            )
-            annotated_dict['chain_pair_pae_min'][chain_name_i][chain_name_j] = float(
-                converted_dict['chain_pair_pae_min'][i][j]
-            )
+    for i, chain_id_i in enumerate(self.unique_chain_ids):
+      annotated_dict['chain_ptm'][chain_id_i] = float(
+          converted_dict['chain_ptm'][i]
+      )
+      annotated_dict['chain_iptm'][chain_id_i] = float(
+          converted_dict['chain_iptm'][i]
+      )
+      annotated_dict['chain_pair_iptm'][chain_id_i] = {}
+      annotated_dict['chain_pair_pae_min'][chain_id_i] = {}
+      for j, chain_id_j in enumerate(self.unique_chain_ids):
+        annotated_dict['chain_pair_iptm'][chain_id_i][chain_id_j] = float(
+            converted_dict['chain_pair_iptm'][i][j]
+        )
+        annotated_dict['chain_pair_pae_min'][chain_id_i][chain_id_j] = float(
+            converted_dict['chain_pair_pae_min'][i][j]
+        )
 
     return _dump_json(annotated_dict, indent=1)
 
