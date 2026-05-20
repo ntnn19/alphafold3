@@ -212,17 +212,17 @@ class StructureConfidenceSummary:
   chain_iptm: np.ndarray
   token_chain_ids: list[str]
   unique_chain_ids: list[str]
-  chain_descriptions: dict[str, str]  # Mapping from chain_id to textual description
+  chain_descriptions: dict[str, str]
 
   @classmethod
   def from_inference_result(
       cls, inference_result: model.InferenceResult
   ) -> Self:
     """Returns a new instance based on a given inference result."""
-    # Extract unique chain IDs and descriptions
-    unique_chain_ids = list(sorted(set(token_id for token_id in inference_result.metadata['token_chain_ids'])))
 
-    # Extract chain descriptions from the structure
+    unique_chain_ids = list(sorted(set(str(token_id) for token_id in inference_result.metadata['token_chain_ids'])))
+
+
     chain_descriptions = {}
     if inference_result.predicted_structure is not None:
         for chain_info in inference_result.predicted_structure.iter_chains():
@@ -271,10 +271,10 @@ class StructureConfidenceSummary:
 
     unique_chain_ids = converted_dict.pop('unique_chain_ids')
 
-    # Create annotated per-chain scores
+
     annotated_dict = {}
 
-    # Annotate per-chain scores with optional textual descriptions
+
     annotated_dict['chain_scores'] = []
     for chain_id, ptm, iptm in zip(unique_chain_ids, self.chain_ptm, self.chain_iptm):
         chain_score = {
@@ -282,7 +282,7 @@ class StructureConfidenceSummary:
             'chain_ptm': float(ptm),
             'chain_iptm': float(iptm)
         }
-        # Add optional textual description if available
+
         if chain_id in self.chain_descriptions and self.chain_descriptions[chain_id]:
             chain_score['chain_description'] = self.chain_descriptions[chain_id]
         annotated_dict['chain_scores'].append(chain_score)
