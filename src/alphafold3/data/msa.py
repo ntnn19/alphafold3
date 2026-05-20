@@ -298,7 +298,9 @@ def get_msa_tool(
           n_iter=msa_tool_config.n_iter,
           e_value=msa_tool_config.e_value,
           z_value=msa_tool_config.z_value,
+          dom_z_value=msa_tool_config.dom_z_value,
           max_sequences=msa_tool_config.max_sequences,
+          max_threads=msa_tool_config.max_parallel_shards,
       )
     case msa_config.NhmmerConfig():
       return nhmmer.Nhmmer(
@@ -308,8 +310,10 @@ def get_msa_tool(
           database_path=msa_tool_config.database_config.path,
           n_cpu=msa_tool_config.n_cpu,
           e_value=msa_tool_config.e_value,
+          z_value=msa_tool_config.z_value,
           max_sequences=msa_tool_config.max_sequences,
           alphabet=msa_tool_config.alphabet,
+          max_threads=msa_tool_config.max_parallel_shards,
       )
     case _:
       raise ValueError(f'Unknown MSA tool: {msa_tool_config}.')
