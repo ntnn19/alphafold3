@@ -257,6 +257,7 @@ class StructureConfidenceSummary:
     return cls(**json.loads(json_string))
 
   def to_json(self) -> str:
+    """Converts this instance into a JSON string."""
     def convert(data):
       if isinstance(data, np.ndarray):
         # Cast to np.float64 before rounding, since casting to Python float will
@@ -272,39 +273,36 @@ class StructureConfidenceSummary:
     basic_dict = dataclasses.asdict(self)
     converted_dict = jax.tree.map(convert, basic_dict)
 
-    unique_chain_ids = converted_dict.pop('unique_chain_ids')
+    # Create the annotated output dictionary matching expected_output.json
+    annotated_dict = {
+        'ptm': float(converted_dict['ptm']),
+        'iptm': float(converted_dict['iptm']),
+        'ranking_score': float(converted_dict['ranking_score']),
+        'fraction_disordered': float(converted_dict['fraction_disordered']),
+        'has_clash': float(converted_dict['has_clash']),
+        'chain_ptm': {},
+        'chain_iptm': {},
+        'chain_pair_iptm': {},
+        'chain_pair_pae_min': {},
+    }
 
+    # Populate chain-level scores
+    chain_names = []
+    for chain_id in self.unique_chain_ids:
+        chain_name = self.chain_descriptions.get(chain_id, chain_id)
+        chain_names.append(chain_name)
+        annotated_dict['chain_ptm'][chain_name] = float(converted_dict['chain_ptm'][chain_id])
+        annotated_dict['chain_iptm'][chain_name] = float(converted_dict['chain_iptm'][chain_id])
 
-    annotated_dict = {}
-
-
-    annotated_dict['chain_scores'] = []
-    for chain_id, ptm, iptm in zip(unique_chain_ids, self.chain_ptm, self.chain_iptm):
-        chain_score = {
-            'chain_id': chain_id,
-            'chain_ptm': float(ptm),
-            'chain_iptm': float(iptm)
-        }
-
-        if chain_id in self.chain_descriptions and self.chain_descriptions[chain_id]:
-            chain_score['chain_description'] = self.chain_descriptions[chain_id]
-        annotated_dict['chain_scores'].append(chain_score)
-
-    annotated_dict['chain_pair_scores'] = []
-    num_chains = len(unique_chain_ids)
-    for i in range(num_chains):
-        for j in range(num_chains):
-            annotated_dict['chain_pair_scores'].append({
-                'chain_id_i': unique_chain_ids[i],
-                'chain_id_j': unique_chain_ids[j],
-                'pae_min': float(self.chain_pair_pae_min[i][j]),
-                'iptm': float(self.chain_pair_iptm[i][j])
-            })
-
-    for key, value in converted_dict.items():
-        annotated_dict[key] = value
-
-    annotated_dict['unique_chain_ids'] = unique_chain_ids
+    # Populate chain pair scores
+    for i, chain_name_i in enumerate(chain_names):
+        for j, chain_name_j in enumerate(chain_names):
+            annotated_dict['chain_pair_iptm'][chain_name_i][chain_name_j] = float(
+                converted_dict['chain_pair_iptm'][i][j]
+            )
+            annotated_dict['chain_pair_pae_min'][chain_name_i][chain_name_j] = float(
+                converted_dict['chain_pair_pae_min'][i][j]
+            )
 
     return _dump_json(annotated_dict, indent=1)
 
