@@ -216,23 +216,21 @@ class StructureConfidenceSummary:
 
   @classmethod
   def from_inference_result(
-      cls, inference_result: model.InferenceResult
+      cls,
+      inference_result: model.InferenceResult,
+      chain_descriptions: dict[str, str] | None = None,
   ) -> Self:
     """Returns a new instance based on a given inference result."""
 
-    unique_chain_ids = list(sorted(set(str(token_id) for token_id in inference_result.metadata['token_chain_ids'])))
+    unique_chain_ids = list(sorted(set(
+        str(token_id)
+        for token_id in inference_result.metadata['token_chain_ids']
+    )))
 
-
-    chain_descriptions = {}
-    if inference_result.predicted_structure is not None:
-        for chain_info in inference_result.predicted_structure.iter_chains():
-            chain_id = chain_info['chain_id']
-            entity_desc = chain_info.get('chain_entity_desc', '')
-            # Include all descriptions, even if they are placeholders or dots
-            chain_descriptions[chain_id] = entity_desc
-
-    # Debug: Print chain descriptions to understand the structure
-    print("Chain descriptions:", chain_descriptions)
+    # Use descriptions supplied by the caller (sourced from the fold input
+    # JSON).  Fall back to an empty dict so chain_id is used as the label.
+    if chain_descriptions is None:
+      chain_descriptions = {}
 
     return cls(
         ptm=float(inference_result.metadata['ptm']),
@@ -289,11 +287,18 @@ class StructureConfidenceSummary:
         'chain_pair_pae_min': {},
     }
 
+    # Build display labels: "{chain_id}_{description}" when a non-empty
+    # description exists, otherwise just the chain_id.
+    def _make_label(chain_id: str) -> str:
+      desc = self.chain_descriptions.get(chain_id, '')
+      if desc and desc != '.':
+        return f'{chain_id}_{desc}'
+      return chain_id
+
     # Populate chain-level scores
     chain_names = []
-    chain_to_index = {chain_id: i for i, chain_id in enumerate(self.unique_chain_ids)}
     for i, chain_id in enumerate(self.unique_chain_ids):
-        chain_name = self.chain_descriptions.get(chain_id, chain_id)
+        chain_name = _make_label(chain_id)
         chain_names.append(chain_name)
         annotated_dict['chain_ptm'][chain_name] = float(converted_dict['chain_ptm'][i])
         annotated_dict['chain_iptm'][chain_name] = float(converted_dict['chain_iptm'][i])

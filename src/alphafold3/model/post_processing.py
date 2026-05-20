@@ -47,6 +47,7 @@ class ProcessedInferenceResult:
 
 def post_process_inference_result(
     inference_result: model.InferenceResult,
+    chain_descriptions: dict[str, str] | None = None,
 ) -> ProcessedInferenceResult:
   """Returns cif, confidence_1d_json, confidence_2d_json, mean_confidence_1d, and ranking confidence."""
 
@@ -65,7 +66,8 @@ def post_process_inference_result(
   mean_confidence_1d = np.mean(confidence_1d.confidence)
   structure_confidence_summary_json = (
       confidence_types.StructureConfidenceSummary.from_inference_result(
-          inference_result
+          inference_result,
+          chain_descriptions=chain_descriptions,
       )
       .to_json()
       .encode('utf-8')
@@ -93,9 +95,12 @@ def write_output(
     terms_of_use: str | None = None,
     name: str | None = None,
     compress: bool = False,
+    chain_descriptions: dict[str, str] | None = None,
 ) -> None:
   """Writes processed inference result to a directory."""
-  processed_result = post_process_inference_result(inference_result)
+  processed_result = post_process_inference_result(
+      inference_result, chain_descriptions=chain_descriptions
+  )
 
   prefix = f'{name}_' if name is not None else ''
 
