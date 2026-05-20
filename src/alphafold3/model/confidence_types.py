@@ -228,8 +228,8 @@ class StructureConfidenceSummary:
         for chain_info in inference_result.predicted_structure.iter_chains():
             chain_id = chain_info['chain_id']
             entity_desc = chain_info.get('chain_entity_desc', '')
-            if entity_desc and entity_desc != '?':
-                chain_descriptions[chain_id] = entity_desc
+            # Include all descriptions, even if they are placeholders or dots
+            chain_descriptions[chain_id] = entity_desc
 
     # Debug: Print chain descriptions to understand the structure
     print("Chain descriptions:", chain_descriptions)
@@ -297,6 +297,11 @@ class StructureConfidenceSummary:
         chain_names.append(chain_name)
         annotated_dict['chain_ptm'][chain_name] = float(converted_dict['chain_ptm'][i])
         annotated_dict['chain_iptm'][chain_name] = float(converted_dict['chain_iptm'][i])
+
+    # Initialize nested dictionaries for chain pair scores
+    for chain_name_i in chain_names:
+        annotated_dict['chain_pair_iptm'][chain_name_i] = {}
+        annotated_dict['chain_pair_pae_min'][chain_name_i] = {}
 
     # Populate chain pair scores
     for i, chain_name_i in enumerate(chain_names):
