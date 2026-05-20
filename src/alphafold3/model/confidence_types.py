@@ -288,11 +288,12 @@ class StructureConfidenceSummary:
 
     # Populate chain-level scores
     chain_names = []
-    for chain_id in self.unique_chain_ids:
+    chain_to_index = {chain_id: i for i, chain_id in enumerate(self.unique_chain_ids)}
+    for i, chain_id in enumerate(self.unique_chain_ids):
         chain_name = self.chain_descriptions.get(chain_id, chain_id)
         chain_names.append(chain_name)
-        annotated_dict['chain_ptm'][chain_name] = float(converted_dict['chain_ptm'][chain_id])
-        annotated_dict['chain_iptm'][chain_name] = float(converted_dict['chain_iptm'][chain_id])
+        annotated_dict['chain_ptm'][chain_name] = float(converted_dict['chain_ptm'][i])
+        annotated_dict['chain_iptm'][chain_name] = float(converted_dict['chain_iptm'][i])
 
     # Populate chain pair scores
     for i, chain_name_i in enumerate(chain_names):
