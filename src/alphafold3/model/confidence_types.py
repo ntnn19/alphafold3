@@ -262,8 +262,11 @@ class StructureConfidenceSummary:
         # Cast to np.float64 before rounding, since casting to Python float will
         # cast to a 64 bit float, potentially undoing np.float32 rounding.
         rounded_data = np.round(data.astype(np.float64), decimals=2).tolist()
-      else:
+      elif isinstance(data, (int, float)):
         rounded_data = np.round(data, decimals=2)
+      else:
+        # For non-numeric data (like strings, dicts, etc.), return as-is
+        rounded_data = data
       return rounded_data
 
     basic_dict = dataclasses.asdict(self)
