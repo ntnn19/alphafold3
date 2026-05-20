@@ -231,6 +231,9 @@ class StructureConfidenceSummary:
             if entity_desc and entity_desc != '?':
                 chain_descriptions[chain_id] = entity_desc
 
+    # Debug: Print chain descriptions to understand the structure
+    print("Chain descriptions:", chain_descriptions)
+
     return cls(
         ptm=float(inference_result.metadata['ptm']),
         iptm=float(inference_result.metadata['iptm']),
