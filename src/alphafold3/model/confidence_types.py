@@ -274,16 +274,7 @@ class StructureConfidenceSummary:
     basic_dict = dataclasses.asdict(self)
     converted_dict = jax.tree.map(convert, basic_dict)
 
-    # chain_descriptions legend: only include chains that have a meaningful
-    # description (non-empty, not the mmCIF placeholder '.').
-    chain_descriptions_out = {
-        cid: desc
-        for cid, desc in self.chain_descriptions.items()
-        if desc and desc != '.'
-    }
-
     annotated_dict = {
-        'chain_descriptions': chain_descriptions_out,
         'ptm': float(converted_dict['ptm']),
         'iptm': float(converted_dict['iptm']),
         'ranking_score': float(converted_dict['ranking_score']),
