@@ -57,6 +57,83 @@ RUN_ALPHAFOLD_PY = os.environ.get(
     "AF3_RUN_ALPHAFOLD_PY", "/app/alphafold/run_alphafold.py"
 )
 
+# Server-side defaults for the AF3 CLI flags that hold paths/values visible
+# only inside the server's filesystem. The client MUST NOT need to know
+# these: in --server_mode the client drops all local-only path flags before
+# forwarding, so this dict is what makes the child invocation actually
+# find its databases and weights.
+#
+# Precedence (see _build_argv):
+#   1. --input_dir / --output_dir set by server (always).
+#   2. Client-forwarded flags (rare in practice — the client drops these).
+#   3. Server config file at $AF3_SERVER_CONFIG (default:
+#      /etc/af3_server/config.json).
+#   4. Env-var shortcuts: AF3_DB_DIR, AF3_MODEL_DIR, AF3_*_BINARY_PATH,
+#      AF3_JAX_COMPILATION_CACHE_DIR. Config file overrides env vars if
+#      both are set.
+#
+# The config file is a JSON object mapping AF3 flag names -> values. It is
+# the operator's single source of truth for the whole server-side
+# invocation. Any None / missing entry means "let AF3's own default handle
+# that flag" — which is only OK for flags whose upstream default actually
+# works on this host.
+
+_SERVER_CONFIG_PATH = Path(
+    os.environ.get("AF3_SERVER_CONFIG", "/etc/af3_server/config.json")
+)
+
+
+def _load_server_defaults() -> dict[str, Any]:
+    """Build the server's default AF3-flag dict.
+
+    Sources (later ones override earlier):
+      1. Env-var shortcuts for the most common flags.
+      2. JSON config file at ``$AF3_SERVER_CONFIG`` (a flat dict of
+         ``flag_name -> value``).
+
+    Any entry whose value is ``None`` is dropped: the child inherits
+    AF3's own absl default for that flag. Any entry whose value is a
+    non-empty string, bool, int, or float is forwarded verbatim on the
+    child argv.
+    """
+    defaults: dict[str, Any] = {
+        "db_dir": os.environ.get("AF3_DB_DIR"),
+        "model_dir": os.environ.get("AF3_MODEL_DIR"),
+        "jackhmmer_binary_path": os.environ.get("AF3_JACKHMMER_BINARY_PATH"),
+        "nhmmer_binary_path": os.environ.get("AF3_NHMMER_BINARY_PATH"),
+        "hmmalign_binary_path": os.environ.get("AF3_HMMALIGN_BINARY_PATH"),
+        "hmmsearch_binary_path": os.environ.get("AF3_HMMSEARCH_BINARY_PATH"),
+        "hmmbuild_binary_path": os.environ.get("AF3_HMMBUILD_BINARY_PATH"),
+        "jax_compilation_cache_dir": os.environ.get(
+            "AF3_JAX_COMPILATION_CACHE_DIR"
+        ),
+    }
+
+    if _SERVER_CONFIG_PATH.is_file():
+        try:
+            loaded = json.loads(_SERVER_CONFIG_PATH.read_text())
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"Malformed AF3 server config at {_SERVER_CONFIG_PATH}: {exc}"
+            ) from exc
+        if not isinstance(loaded, dict):
+            raise RuntimeError(
+                f"AF3 server config at {_SERVER_CONFIG_PATH} must be a JSON"
+                f" object mapping flag names -> values."
+            )
+        # Config file wins over env vars. Keys starting with '_' are
+        # comment-only and ignored (convention for JSON without comments).
+        for k, v in loaded.items():
+            if k.startswith("_"):
+                continue
+            defaults[k] = v
+
+    # Drop None entries so we never emit '--flag=None' on the child argv.
+    return {k: v for k, v in defaults.items() if v is not None}
+
+
+_SERVER_DEFAULT_FLAGS: dict[str, Any] = _load_server_defaults()
+
 app = FastAPI(title="AlphaFold 3 in-container server")
 
 
@@ -110,18 +187,35 @@ def _fmt_flag_value(v: Any) -> str:
 def _build_argv(inputs_dir: Path, run_dir: Path, flags: dict[str, Any]) -> list[str]:
     """Build the argv passed to ``absl.app.run(main, argv=argv)`` in the child.
 
-    - ``argv[0]`` is the script name (absl requires a value there).
-    - ``--input_dir`` and ``--output_dir`` are set by the server; any values
-      the client tried to forward for those keys are ignored (defensive; the
-      client already drops them).
+    Precedence:
+      1. ``--input_dir`` / ``--output_dir`` — set by the server; any values
+         the client tried to forward for those keys are ignored.
+      2. Client-forwarded flags win over server defaults (the client already
+         drops local-only path flags, so this only overrides in the rare
+         case where the client explicitly re-added one).
+      3. Server-side defaults (``_SERVER_DEFAULT_FLAGS``) fill in the
+         database/model paths and HMMER binaries so the user never has to
+         know them in ``--server_mode``.
     """
-    flags = {k: v for k, v in flags.items() if k not in ("input_dir", "output_dir", "json_path")}
+    client_flags = {
+        k: v for k, v in flags.items()
+        if k not in ("input_dir", "output_dir", "json_path")
+    }
+
     argv: list[str] = [
         RUN_ALPHAFOLD_PY,
         f"--input_dir={inputs_dir}",
         f"--output_dir={run_dir}",
     ]
-    for k, v in flags.items():
+
+    # Merge: server defaults + client-forwarded, client wins on collision.
+    effective: dict[str, Any] = {}
+    for k, v in _SERVER_DEFAULT_FLAGS.items():
+        if v is not None:
+            effective[k] = v
+    effective.update(client_flags)
+
+    for k, v in effective.items():
         if v is None:
             continue
         argv.append(f"--{k}={_fmt_flag_value(v)}")
