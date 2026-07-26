@@ -141,5 +141,5 @@ def write_embeddings(
   prefix = f'{name}_' if name else ''
 
   with io.BytesIO() as bio:
-    np.savez_compressed(bio, **embeddings)
+    np.savez_compressed(bio, **embeddings)  # pyrefly: ignore[bad-argument-type]
     (output_dir / f'{prefix}embeddings.npz').write_bytes(bio.getvalue())

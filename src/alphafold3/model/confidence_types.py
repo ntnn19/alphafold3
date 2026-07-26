@@ -191,7 +191,7 @@ class StructureConfidenceSummary:
       cls, inference_result: model.InferenceResult
   ) -> Self:
     """Returns a new instance based on a given inference result."""
-    chain_ids = [str(c) for c in inference_result.metadata['token_chain_ids']]
+    chain_ids = [str(c) for c in inference_result.metadata['token_chain_ids']]  # pyrefly: ignore[not-iterable]
     return cls(
         ptm=float(inference_result.metadata['ptm']),
         iptm=float(inference_result.metadata['iptm']),
