@@ -528,7 +528,7 @@ resort to running AlphaFold 3 in the slow CPU-only mode even though it has a GPU
     uv run run_alphafold.py \
       --json_path="..." \
       --output_dir="..." \
-      --model_dir="..."
+      --model_dir="..." \
       --jax_backend="cpu" \
-      --flash_attention_implementation="xla" \
+      --flash_attention_implementation="xla"
     ```
