@@ -521,8 +521,11 @@ resort to running AlphaFold 3 in the slow CPU-only mode even though it has a GPU
     uv run python run_alphafold_data_test.py
     ```
 
-7.  You can now run AlphaFold 3. Make sure to set flags `--jax_backend="cpu"`
-    and `--flash_attention_implementation="xla"`:
+7.  You can now run AlphaFold 3. If you are running on a Linux CPU-only machine,
+    make sure to set flags `--jax_backend="cpu"` and
+    `--flash_attention_implementation="xla"`. If you are running on Mac OS with
+    Apple Silicon, you can set `--jax_backend="mps"` instead and get roughly 3x
+    better inference performance by using the built-in GPU:
 
     ```sh
     uv run run_alphafold.py \
@@ -532,3 +535,10 @@ resort to running AlphaFold 3 in the slow CPU-only mode even though it has a GPU
       --jax_backend="cpu" \
       --flash_attention_implementation="xla"
     ```
+
+#### Running on Mac OS using the Apple Silicon GPU
+
+As an alternative to CPU-only mode, AlphaFold 3 inference can run on the Apple
+Silicon GPU with `--jax_backend="mps"` via the community supported `jax-mps`
+Metal plugin. This is an unofficial and experimental path, but it is roughly 3×
+faster than CPU (possibly more on newer M chips).

@@ -73,6 +73,7 @@ _DEFAULT_DB_DIR = _HOME_DIR / 'public_databases'
 class JaxBackend(enum.StrEnum):
   CPU = enum.auto()
   GPU = enum.auto()
+  MPS = enum.auto()  # Apple Metal Performance Shaders (MPS).
 
 
 # Input and output paths.
@@ -326,11 +327,12 @@ _JAX_COMPILATION_CACHE_DIR = flags.DEFINE_string(
 _GPU_DEVICE = flags.DEFINE_integer(
     'gpu_device',
     0,
-    'Optional override for the GPU device to use for inference, uses zero-based'
-    ' indexing. Defaults to the 0th GPU on the system. Useful on multi-GPU'
+    'Optional override for the JAX device to use for inference. Uses zero-based'
+    ' indexing. Defaults to the 0th device on the system. Useful on multi-GPU'
     ' systems to pin each run to a specific GPU. Note that if GPUs are already'
     ' pre-filtered by the environment (e.g. by using CUDA_VISIBLE_DEVICES),'
-    ' this flag refers to the GPU index after the filtering has been done.',
+    ' this flag refers to the GPU index after the filtering has been done.'
+    ' Contrary to its name, this flag is also used for CPU and MPS devices.',
 )
 _JAX_BACKEND = flags.DEFINE_enum_class(
     'jax_backend',
@@ -338,10 +340,10 @@ _JAX_BACKEND = flags.DEFINE_enum_class(
     enum_class=JaxBackend,
     help=(
         'JAX backend to use. "gpu" uses a GPU for inference. "cpu" uses a CPU'
-        ' only for inference. This is much slower than using a GPU, but can be'
+        ' only for inference which is much slower than using a GPU, but can be'
         ' useful for testing or running on systems without a GPU supported by'
-        ' JAX. If you set this flag to "cpu", you must also set'
-        ' --flash_attention_implementation=xla.'
+        ' JAX. "mps" uses a GPU on Apple Silicon. If you set this flag to "cpu"'
+        ' or "mps", you must also set --flash_attention_implementation=xla.'
     ),
 )
 _BUCKETS = flags.DEFINE_list(
@@ -934,11 +936,11 @@ def main(_):
 
   if _RUN_INFERENCE.value:
     # Fail early on incompatible devices, but only if we're running inference.
-    if _JAX_BACKEND.value == JaxBackend.CPU:
+    if _JAX_BACKEND.value in {JaxBackend.CPU, JaxBackend.MPS}:
       if _FLASH_ATTENTION_IMPLEMENTATION.value != 'xla':
         raise ValueError(
-            'For CPU-only inference, the --flash_attention_implementation must'
-            ' be set to "xla".'
+            'For CPU-only or MPS inference, --flash_attention_implementation'
+            ' must be set to "xla".'
         )
     elif _JAX_BACKEND.value == JaxBackend.GPU:
       gpu_devices = jax.local_devices(backend='gpu')
@@ -1022,17 +1024,11 @@ def main(_):
 
   if _RUN_INFERENCE.value:
     devices = jax.local_devices(backend=_JAX_BACKEND.value)
-    if _JAX_BACKEND.value == JaxBackend.CPU:
-      device = devices[0]
-      print(f'Found local CPU devices: {devices}, using device 0: {device}')
-    elif _JAX_BACKEND.value == JaxBackend.GPU:
-      print(
-          f'Found local GPU devices: {devices}, using device '
-          f'{_GPU_DEVICE.value}: {devices[_GPU_DEVICE.value]}'
-      )
-      device = devices[_GPU_DEVICE.value]
-    else:
-      raise ValueError(f'Unsupported JAX backend: {_JAX_BACKEND.value}')
+    device = devices[_GPU_DEVICE.value]
+    print(
+        f'Found local {str(_JAX_BACKEND.value).upper()} devices: {devices},'
+        f' using device {_GPU_DEVICE.value}: {device}'
+    )
 
     print('Building model from scratch...')
     model_runner = ModelRunner(
