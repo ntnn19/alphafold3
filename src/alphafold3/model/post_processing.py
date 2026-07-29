@@ -56,6 +56,8 @@ class ProcessedInferenceResult:
 
 def post_process_inference_result(
     inference_result: model.InferenceResult,
+    *,
+    keep_license: bool = True,
 ) -> ProcessedInferenceResult:
   """Returns cif, confidence_1d_json, confidence_2d_json, mean_confidence_1d, and ranking confidence."""
 
@@ -65,8 +67,11 @@ def post_process_inference_result(
       old_cif=inference_result.predicted_structure.to_mmcif_dict(),
       version=f'{version.__version__} @ {timestamp}',
       model_id=inference_result.model_id,
+      keep_license=keep_license,
   )
-  cif = mmcif_metadata.add_legal_comment(cif_with_metadata.to_string())
+  cif = cif_with_metadata.to_string()
+  if keep_license:
+    cif = mmcif_metadata.add_legal_comment(cif)
   cif = cif.encode('utf-8')
   confidence_1d = confidence_types.AtomConfidence.from_inference_result(
       inference_result
@@ -99,12 +104,16 @@ def post_process_inference_result(
 def write_output(
     inference_result: model.InferenceResult,
     output_dir: epath.PathLike,
+    *,
     terms_of_use: str | None = None,
     name: str | None = None,
     compress: bool = False,
+    keep_license: bool = True,
 ) -> None:
   """Writes processed inference result to a directory."""
-  processed_result = post_process_inference_result(inference_result)
+  processed_result = post_process_inference_result(
+      inference_result, keep_license=keep_license
+  )
 
   output_dir = epath.Path(output_dir)
   prefix = f'{name}_' if name is not None else ''

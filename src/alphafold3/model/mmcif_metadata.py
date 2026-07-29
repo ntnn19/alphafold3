@@ -54,7 +54,11 @@ _MMCIF_AUTHORS: Final[tuple[str, ...]] = _MMCIF_PAPER_AUTHORS
 
 
 def add_metadata_to_mmcif(
-    old_cif: mmcif.Mmcif, version: str, model_id: bytes
+    old_cif: mmcif.Mmcif,
+    *,
+    version: str,
+    model_id: bytes,
+    keep_license: bool = True,
 ) -> mmcif.Mmcif:
   """Adds metadata to a mmCIF to make it ModelCIF-conformant."""
   cif = {}
@@ -66,10 +70,16 @@ def add_metadata_to_mmcif(
       'https://raw.githubusercontent.com/ihmwg/ModelCIF/master/dist/mmcif_ma.dic'
   ]
 
-  cif['_pdbx_data_usage.id'] = ['1', '2']
-  cif['_pdbx_data_usage.type'] = ['license', 'disclaimer']
-  cif['_pdbx_data_usage.details'] = [_LICENSE, _DISCLAIMER]
-  cif['_pdbx_data_usage.url'] = [_LICENSE_URL, '?']
+  if keep_license:
+    cif['_pdbx_data_usage.id'] = ['1', '2']
+    cif['_pdbx_data_usage.type'] = ['license', 'disclaimer']
+    cif['_pdbx_data_usage.details'] = [_LICENSE, _DISCLAIMER]
+    cif['_pdbx_data_usage.url'] = [_LICENSE_URL, '?']
+  else:
+    cif['_pdbx_data_usage.id'] = ['1']
+    cif['_pdbx_data_usage.type'] = ['disclaimer']
+    cif['_pdbx_data_usage.details'] = [_DISCLAIMER]
+    cif['_pdbx_data_usage.url'] = ['?']
 
   # Structure author details.
   cif['_audit_author.name'] = []

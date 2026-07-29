@@ -410,7 +410,8 @@ _SAVE_DISTOGRAM = flags.DEFINE_bool(
 _SAVE_TERMS_OF_USE = flags.DEFINE_bool(
     'save_terms_of_use',
     True,
-    'Whether to save the terms of use as an MD file in the output directory.',
+    'Whether to save the terms of use as an MD file in the output directory'
+    ' and add the license to the output mmCIF file.',
 )
 _FORCE_OUTPUT_DIR = flags.DEFINE_bool(
     'force_output_dir',
@@ -679,6 +680,7 @@ def write_outputs(
           output_dir=sample_dir,
           name=f'{job_name}_seed-{seed}_sample-{sample_idx}',
           compress=compress_large_output_files,
+          keep_license=save_terms_of_use,
       )
       ranking_score = float(result.metadata['ranking_score'])
       ranking_scores.append((seed, sample_idx, ranking_score))
@@ -711,6 +713,7 @@ def write_outputs(
         terms_of_use=output_terms if save_terms_of_use else None,
         name=job_name,
         compress=compress_large_output_files,
+        keep_license=save_terms_of_use,
     )
     # Save csv of ranking scores with seeds and sample indices, to allow easier
     # comparison of ranking scores across different runs.
@@ -833,7 +836,8 @@ def process_fold_input(
       output directory instead if the existing one is non-empty.
     compress_large_output_files: If True, compress large output files (mmCIF and
       confidences JSON) using zstandard.
-    save_terms_of_use: If True, write the terms of use to the output directory.
+    save_terms_of_use: If True, write the terms of use to the output directory
+      and add the license to the output mmCIF file.
 
   Returns:
     The processed fold input, or the inference results for each seed.
