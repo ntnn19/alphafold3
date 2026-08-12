@@ -39,8 +39,13 @@ def create_query_fasta_file(sequence: str, path: str, linewidth: int = 80):
       i += linewidth
 
 
-def check_binary_exists(path: str, name: str) -> None:
+def check_binary_exists(path: os.PathLike[str] | str | None, name: str) -> None:
   """Checks if a binary exists on the given path and raises otherwise."""
+  if path is None:
+    raise RuntimeError(
+        f'Could not find the {name} binary. Check thet it is installed and in'
+        ' the system PATH. Alternatively, pass in the full path to the binary.'
+    )
   if not os.path.exists(path):
     raise RuntimeError(f'{name} binary not found at {path}')
 
