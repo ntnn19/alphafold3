@@ -977,6 +977,7 @@ def run_hmmsearch_with_a3m(
       binary_path=hmmsearch_config.hmmsearch_binary_path,
       hmmbuild_binary_path=hmmsearch_config.hmmbuild_binary_path,
       database_path=_resolve_path(database_path),
+      n_cpu=hmmsearch_config.n_cpu,
       e_value=hmmsearch_config.e_value,
       inc_e=hmmsearch_config.inc_e,
       dom_e=hmmsearch_config.dom_e,

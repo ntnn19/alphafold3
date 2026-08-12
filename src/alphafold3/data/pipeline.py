@@ -260,6 +260,7 @@ class DataPipelineConfig:
     nhmmer_max_parallel_shards: Maximum number of shards to search against in
       parallel. If None, one Nhmmer instance will be run per shard. Only
       applicable if the database is sharded.
+    hmmsearch_n_cpu: Number of CPUs to use for Hmmsearch.
     max_template_date: The latest date of templates to use.
   """
 
@@ -295,6 +296,7 @@ class DataPipelineConfig:
   jackhmmer_max_parallel_shards: int | None = None
   nhmmer_n_cpu: int = 8
   nhmmer_max_parallel_shards: int | None = None
+  hmmsearch_n_cpu: int = 8
 
   max_template_date: datetime.date
 
@@ -443,6 +445,7 @@ class DataPipeline:
             hmmsearch_config=msa_config.HmmsearchConfig(
                 hmmsearch_binary_path=data_pipeline_config.hmmsearch_binary_path,
                 hmmbuild_binary_path=data_pipeline_config.hmmbuild_binary_path,
+                n_cpu=data_pipeline_config.hmmsearch_n_cpu,
                 filter_f1=0.1,
                 filter_f2=0.1,
                 filter_f3=0.1,

@@ -281,6 +281,13 @@ _NHMMER_MAX_PARALLEL_SHARDS = flags.DEFINE_integer(
     ' database is sharded.',
     lower_bound=1,
 )
+_HMMSEARCH_N_CPU = flags.DEFINE_integer(
+    'hmmsearch_n_cpu',
+    _num_cpus_for_msa_tools(),
+    'Number of CPUs to use for Hmmsearch. Defaults to min(cpu_count, 8). Going'
+    ' above 8 CPUs provides very little additional speedup.',
+    lower_bound=0,
+)
 
 # Data pipeline configuration.
 _RESOLVE_MSA_OVERLAPS = flags.DEFINE_bool(
@@ -1021,6 +1028,7 @@ def main(_):
         jackhmmer_max_parallel_shards=_JACKHMMER_MAX_PARALLEL_SHARDS.value,
         nhmmer_n_cpu=_NHMMER_N_CPU.value,
         nhmmer_max_parallel_shards=_NHMMER_MAX_PARALLEL_SHARDS.value,
+        hmmsearch_n_cpu=_HMMSEARCH_N_CPU.value,
         max_template_date=max_template_date,
     )
   else:

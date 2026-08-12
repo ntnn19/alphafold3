@@ -43,7 +43,7 @@ class DatabaseConfig:
 
 @dataclasses.dataclass(frozen=True, kw_only=True, slots=True)
 class JackhmmerConfig:
-  """Configuration for a jackhmmer run.
+  """Configuration for Jackhmmer.
 
   Attributes:
       binary_path: Path to the binary of the msa tool.
@@ -76,7 +76,7 @@ class JackhmmerConfig:
 
 @dataclasses.dataclass(frozen=True, kw_only=True, slots=True)
 class NhmmerConfig:
-  """Configuration for a nhmmer run.
+  """Configuration for Nhmmer.
 
   Attributes:
       binary_path: Path to the binary of the msa tool.
@@ -132,11 +132,26 @@ class RunConfig:
 
 @dataclasses.dataclass(frozen=True, kw_only=True, slots=True)
 class HmmsearchConfig:
-  """Configuration for a hmmsearch."""
+  """Configuration for Hmmsearch.
+
+  Attributes:
+    hmmsearch_binary_path: Path to the hmmsearch binary.
+    hmmbuild_binary_path: Path to the hmmbuild binary to build profile from MSA.
+    n_cpu: Number of CPUs to use in Hmmsearch.
+    e_value: E-value for the database lookup.
+    inc_e: E-value for inclusion in the output.
+    dom_e: Domain E-value for the database lookup.
+    incdom_e: Domain E-value for inclusion in the output.
+    alphabet: Alphabet to use for the hmmbuild binary.
+    filter_f1: MSV and biased composition pre-filter.
+    filter_f2: Viterbi pre-filter.
+    filter_f3: Forward pre-filter.
+    filter_max: If true, remove all filters.
+  """
 
   hmmsearch_binary_path: str
   hmmbuild_binary_path: str
-
+  n_cpu: int
   e_value: float
   inc_e: float
   dom_e: float
