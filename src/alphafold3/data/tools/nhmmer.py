@@ -24,7 +24,6 @@ from concurrent import futures
 import heapq
 import os
 import pathlib
-import shutil
 import tempfile
 import time
 from typing import Final
@@ -156,31 +155,31 @@ class Nhmmer(msa_tool.MsaTool):
           else f'{target_sequence[:16]}... (len {len(target_sequence)})',
       )
 
-      global_temp_dir = tempfile.mkdtemp()
+      with tempfile.TemporaryDirectory() as global_temp_dir:
 
-      def _query_shard_fn(
-          shard_path: str,
-      ) -> tuple[msa_tool.MsaToolResult, float]:
-        t_start = time.time()
-        # Get tblout as it contains e-values we need for merging sequences.
-        result = self._query_db_shard(
-            target_sequence=target_sequence,
-            db_shard_path=shard_path,
-            get_tblout=True,  # Tblout contains e-values needed for merging.
-            global_temp_dir=global_temp_dir,
-        )
-        return result, time.time() - t_start
+        def _query_shard_fn(
+            shard_path: str,
+        ) -> tuple[msa_tool.MsaToolResult, float]:
+          t_start = time.time()
+          # Get tblout as it contains e-values we need for merging sequences.
+          result = self._query_db_shard(
+              target_sequence=target_sequence,
+              db_shard_path=shard_path,
+              get_tblout=True,  # Tblout contains e-values needed for merging.
+              global_temp_dir=global_temp_dir,
+          )
+          return result, time.time() - t_start
 
-      with futures.ThreadPoolExecutor(max_workers=self._max_threads) as ex:
-        tool_outputs, timings = zip(*ex.map(_query_shard_fn, self._shard_paths))
+        with futures.ThreadPoolExecutor(max_workers=self._max_threads) as ex:
+          tool_outputs, timings = zip(
+              *ex.map(_query_shard_fn, self._shard_paths)
+          )
 
       logging.info(
           'Finished query for %d shards, shard timings (seconds): %s',
           len(tool_outputs),
           ', '.join(f'{t:.1f}' for t in timings),
       )
-
-      shutil.rmtree(global_temp_dir, ignore_errors=True)
       return _merge_nhmmer_results(tool_outputs, self._max_sequences)
 
     else:
