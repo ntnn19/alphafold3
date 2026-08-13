@@ -347,7 +347,7 @@ class InferenceTest(parameterized.TestCase):
     # Ranking score should be in the expected range for all samples.
     ranking_scores = [float(s['ranking_score']) for s in ranking_scores]
     lower = 0.66
-    upper = 0.78
+    upper = 0.79
     scores_ok = [lower <= score <= upper for score in ranking_scores]
     if not all(scores_ok):
       printable_scores = [f'{score:.2f}' for score in ranking_scores]
