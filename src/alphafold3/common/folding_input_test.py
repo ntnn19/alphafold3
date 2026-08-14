@@ -520,6 +520,38 @@ class InputTest(parameterized.TestCase):
       with self.assertRaisesRegex(ValueError, 'unpairedMsa/unpairedMsaPath'):
         folding_input.Input.from_json(json.dumps(test_json))
 
+  def test_fill_missing_fields_protein(self):
+    protein_chain = folding_input.ProteinChain(
+        id='A', sequence='ACDE', ptms=[('UNK', 1)]
+    )
+    self.assertEqual(
+        protein_chain.fill_missing_fields(),
+        folding_input.ProteinChain(
+            id='A',
+            sequence='ACDE',
+            ptms=[('UNK', 1)],
+            description=None,
+            unpaired_msa='',
+            paired_msa='',
+            templates=[],
+        ),
+    )
+
+  def test_fill_missing_fields_rna(self):
+    rna_chain = folding_input.RnaChain(
+        id='A', sequence='ACDE', modifications=[('UNK', 1)]
+    )
+    self.assertEqual(
+        rna_chain.fill_missing_fields(),
+        folding_input.RnaChain(
+            id='A',
+            sequence='ACDE',
+            modifications=[('UNK', 1)],
+            description=None,
+            unpaired_msa='',
+        ),
+    )
+
   @parameterized.named_parameters(
       ('fill_missing_fields', True), ('do_not_fill_missing_fields', False)
   )
@@ -1913,6 +1945,18 @@ class InputTest(parameterized.TestCase):
       chain = fold_inputs[0].chains[0]
       assert isinstance(chain, folding_input.ProteinChain)
       self.assertEqual(chain.unpaired_msa, msa_content)
+
+  def test_rna_modifications(self):
+    rna_chain = folding_input.RnaChain(
+        id='A', sequence='AU', modifications=[('2MG', 1)]
+    )
+    self.assertSequenceEqual(rna_chain.modifications, [('2MG', 1)])
+
+  def test_dna_modifications(self):
+    dna_chain = folding_input.DnaChain(
+        id='A', sequence='AG', modifications=[('6OG', 1)]
+    )
+    self.assertSequenceEqual(dna_chain.modifications, [('6OG', 1)])
 
 
 class SampleRandomSeedTest(parameterized.TestCase):

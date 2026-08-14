@@ -109,6 +109,9 @@ class Template:
       query_to_template_map: A mapping from query residue index to template
         residue index.
     """
+    if not mmcif:
+      raise ValueError('The template mmCIF must be a non-empty string.')
+
     self._mmcif = mmcif
     # Needed to make the Template class hashable.
     self._query_to_template = tuple(query_to_template_map.items())
@@ -460,10 +463,10 @@ class ProteinChain:
       ccd_coded_seq[ptm_index - 1] = ptm_code
     return ccd_coded_seq
 
-  def fill_missing_fields(self) -> Self:
+  def fill_missing_fields(self) -> 'ProteinChain':
     """Fill missing MSA and template fields with default values."""
-    return ProteinChain(  # pyrefly: ignore[bad-return]
-        id=self.id,
+    return ProteinChain(
+        id=self._id,
         sequence=self._sequence,
         ptms=self._ptms,
         description=self._description,
@@ -671,13 +674,13 @@ class RnaChain:
       ccd_coded_seq[modification_index - 1] = ccd_code
     return ccd_coded_seq
 
-  def fill_missing_fields(self) -> Self:
+  def fill_missing_fields(self) -> 'RnaChain':
     """Fill missing MSA fields with default values."""
-    return RnaChain(  # pyrefly: ignore[bad-return]
-        id=self.id,
-        sequence=self.sequence,
-        modifications=self.modifications,
-        description=self.description,
+    return RnaChain(
+        id=self._id,
+        sequence=self._sequence,
+        modifications=self._modifications,
+        description=self._description,
         unpaired_msa=self._unpaired_msa or '',
     )
 
@@ -735,6 +738,10 @@ class DnaChain:
     ])
 
   @property
+  def modifications(self) -> Sequence[tuple[str, int]]:
+    return self._modifications
+
+  @property
   def description(self) -> str | None:
     return self._description
 
@@ -755,9 +762,6 @@ class DnaChain:
     return hash(
         (self._id, self._sequence, self._modifications, self._description)
     )
-
-  def modifications(self) -> Sequence[tuple[str, int]]:
-    return self._modifications
 
   def hash_without_id(self) -> int:
     """Returns a hash ignoring the ID - useful for deduplication."""
