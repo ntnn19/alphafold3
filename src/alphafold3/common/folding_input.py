@@ -417,6 +417,8 @@ class ProteinChain:
     if raw_templates is None:
       templates = None
     else:
+      if not isinstance(raw_templates, list):
+        raise ValueError(f'Templates must be a list, got {type(raw_templates)}')
       templates = []
       for raw_template in raw_templates:
         templates.append(Template.from_dict(raw_template, json_path=json_path))
