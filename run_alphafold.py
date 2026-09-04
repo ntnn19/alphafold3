@@ -35,6 +35,7 @@ import datetime
 import enum
 import functools
 import io
+import json
 import os
 import shutil
 import string
@@ -433,6 +434,29 @@ _COMPRESS_LARGE_OUTPUT_FILES = flags.DEFINE_bool(
     'If True, compresses the output mmCIF and confidences JSON files (the two'
     ' largest files) using zstandard. Note that embeddings and distogram, if'
     ' saved, are already stored in a compressed format.',
+)
+
+
+# Server mode: turn this CLI into a thin HTTP client of an in-house AF3 server.
+# When enabled, --json_path / --input_dir / --output_dir keep their normal
+# meaning on the local machine (input source, local destination for extracted
+# results), and every other AF3 flag the user passed is forwarded verbatim to
+# the server, which runs AlphaFold 3 inside its container and mails the results
+# back as a zip. See the af3_server.py module docstring for the wire
+# protocol.
+_SERVER_MODE = flags.DEFINE_bool(
+    'server_mode',
+    False,
+    'If True, submit this run to a remote AlphaFold 3 server (--server_url)'
+    ' instead of running locally. Fold inputs are read locally, forwarded over'
+    ' HTTP, and the produced structures are downloaded and extracted into'
+    ' --output_dir with the same on-disk layout as a local run.',
+)
+_SERVER_URL = flags.DEFINE_string(
+    'server_url',
+    None,
+    'Base URL of the AlphaFold 3 server (e.g. http://af3-server:8000). Required'
+    ' when --server_mode=true. Ignored otherwise.',
 )
 
 
@@ -909,6 +933,228 @@ def process_fold_input(
   return output
 
 
+# ---------------------------------------------------------------------------
+# Server-mode client (--server_mode=true)
+# ---------------------------------------------------------------------------
+# Flags that are meaningful only on the local machine and MUST NOT be
+# forwarded to the server. Paths listed here differ between the client's
+# filesystem and the container's, so forwarding them would silently break
+# the remote run.
+_LOCAL_ONLY_FLAGS = frozenset({
+    'server_mode',
+    'server_url',
+    'json_path',
+    'input_dir',
+    'output_dir',
+    'model_dir',
+    'db_dir',
+    'jackhmmer_binary_path',
+    'nhmmer_binary_path',
+    'hmmalign_binary_path',
+    'hmmsearch_binary_path',
+    'hmmbuild_binary_path',
+    'small_bfd_database_path',
+    'mgnify_database_path',
+    'uniprot_cluster_annot_database_path',
+    'uniref90_database_path',
+    'ntrna_database_path',
+    'rfam_database_path',
+    'rna_central_database_path',
+    'pdb_database_path',
+    'seqres_database_path',
+    'jax_compilation_cache_dir',
+    'gpu_device',
+})
+
+
+def _collect_forwarded_flags() -> dict:
+  """Return the set of user-supplied AF3 flags to forward to the server.
+
+  Only flags the user explicitly passed on the CLI (``.present``) are
+  forwarded, so we never accidentally clobber the server's defaults with our
+  own defaults. Local-only flags (see ``_LOCAL_ONLY_FLAGS``) are dropped and
+  a warning is emitted if the user set one — the server has its own view of
+  those paths and forwarding them would break the run.
+
+  ``epath.Path`` values (from ``epath.DEFINE_path`` flags) are stringified via
+  ``os.fspath`` so the envelope is plain JSON.
+  """
+  from absl import logging as _absl_logging  # local to keep the local path clean
+
+  forwarded: dict = {}
+  for name in flags.FLAGS:
+    fl = flags.FLAGS[name]
+    if not fl.present:
+      continue
+    if name in _LOCAL_ONLY_FLAGS:
+      if name not in ('server_mode', 'server_url', 'json_path', 'input_dir',
+                      'output_dir'):
+        _absl_logging.warning(
+            'Flag --%s is local-only in --server_mode; dropped before'
+            ' forwarding to the server.', name)
+      continue
+    value = fl.value
+    # epath.Path / pathlib.Path -> str for JSON serialization.
+    if hasattr(value, '__fspath__'):
+      value = os.fspath(value)
+    forwarded[name] = value
+  return forwarded
+
+
+def _fold_input_to_raw_json(fold_input) -> dict:
+  """Serialize a loaded ``folding_input.Input`` back to a raw AF3 JSON dict."""
+  return json.loads(fold_input.to_json())
+
+
+def _run_client(
+    fold_inputs_iter,
+    output_dir: epath.PathLike,
+    server_url: str,
+) -> None:
+  """Submit each fold input sequentially to the server and extract results.
+
+  Layout on disk after this returns is identical to a local run: one
+  subdirectory per fold input, named by ``fold_input.sanitised_name()``.
+  """
+  import tempfile
+  import time
+  import zipfile
+
+  import requests
+
+  server_url = server_url.rstrip('/')
+  forwarded_flags = _collect_forwarded_flags()
+
+  output_dir = epath.Path(output_dir)
+  output_dir.mkdir(parents=True, exist_ok=True)
+
+  # Sequential submit: preserve local-run ordering semantics.
+  fold_inputs = list(fold_inputs_iter)
+  if not fold_inputs:
+    raise ValueError('No fold inputs found; nothing to submit.')
+
+  for idx, fold_input in enumerate(fold_inputs):
+    fold_name = fold_input.sanitised_name()
+    print(f'[server-mode] ({idx + 1}/{len(fold_inputs)}) submitting'
+          f' {fold_input.name!r} -> {server_url}')
+
+    envelope = {
+        'job_name': fold_input.name,
+        'fold_inputs': [_fold_input_to_raw_json(fold_input)],
+        'flags': forwarded_flags,
+    }
+
+    submit_resp = _request_with_retry(
+        'POST', f'{server_url}/run', json=envelope)
+    submit_resp.raise_for_status()
+    job_id = submit_resp.json()['job_id']
+    print(f'[server-mode] job_id={job_id}')
+
+    # Follow logs (best-effort); if the stream drops, we fall back to polling.
+    try:
+      with requests.get(
+          f'{server_url}/progress/{job_id}', stream=True, timeout=None) as r:
+        for chunk in r.iter_content(chunk_size=None, decode_unicode=True):
+          if chunk:
+            print(chunk, end='', flush=True)
+    except Exception as e:  # noqa: BLE001
+      print(f'\n[server-mode] progress stream error: {e}; falling back to polling')
+
+    # Final status.
+    while True:
+      status_resp = _request_with_retry('GET', f'{server_url}/status/{job_id}')
+      status_resp.raise_for_status()
+      status = status_resp.json()
+      if status['status'] in ('done', 'failed'):
+        break
+      time.sleep(3)
+
+    if status['status'] != 'done':
+      # Pull the log tail so the user sees the actual AF3 error.
+      try:
+        log_resp = requests.get(f'{server_url}/log/{job_id}', timeout=60)
+        log_tail = log_resp.text[-4000:] if log_resp.ok else '(no log)'
+      except Exception:  # noqa: BLE001
+        log_tail = '(log fetch failed)'
+      raise RuntimeError(
+          f'Server job {job_id} failed: {status.get("error")!r}\n'
+          f'--- server log tail ---\n{log_tail}')
+
+    # Extraction target: mirrors a local run's <output_dir>/<sanitised_name>/.
+    target_dir = output_dir / fold_name
+    if target_dir.exists() and not _FORCE_OUTPUT_DIR.value:
+      raise FileExistsError(
+          f'Output directory {target_dir} already exists. Rerun with'
+          ' --force_output_dir=true to overwrite.')
+
+    print(f'[server-mode] downloading results for {fold_name}...')
+    with requests.get(
+        f'{server_url}/download/{job_id}', stream=True, timeout=None) as r:
+      r.raise_for_status()
+      # Stream to a local temp file (zipfile needs a real seekable path), then
+      # unzip into output_dir. Keeps memory flat for large results. This uses
+      # the local filesystem regardless of the epath backend behind
+      # `output_dir`; the extracted contents are then written through epath.
+      with tempfile.NamedTemporaryFile(
+          delete=False, suffix='.zip') as tmp:
+        for chunk in r.iter_content(chunk_size=1 << 20):
+          if chunk:
+            tmp.write(chunk)
+        tmp_path = tmp.name
+
+    try:
+      with zipfile.ZipFile(tmp_path) as zf:
+        _extract_zip_via_epath(zf, output_dir)
+    finally:
+      try:
+        os.remove(tmp_path)
+      except OSError:
+        pass
+
+    print(f'[server-mode] wrote {target_dir}')
+
+
+def _extract_zip_via_epath(zf, dest_root: epath.Path) -> None:
+  """Extract a ZipFile into ``dest_root`` using epath, so remote FS backends
+  (gs://, s3://, ...) keep working when a user points --output_dir there.
+  """
+  for info in zf.infolist():
+    if info.is_dir():
+      (dest_root / info.filename).mkdir(parents=True, exist_ok=True)
+      continue
+    dest_path = dest_root / info.filename
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    with zf.open(info) as src, dest_path.open('wb') as dst:
+      shutil.copyfileobj(src, dst)
+
+
+def _request_with_retry(method: str, url: str, **kwargs):
+  """Retry HTTP requests on 5xx and network errors."""
+  import time
+
+  import requests
+
+  retries = 5
+  backoff = 2.0
+  last_err = None
+
+  for attempt in range(retries):
+    try:
+      resp = requests.request(method, url, timeout=60, **kwargs)
+      if resp.status_code < 500:
+        return resp
+      last_err = f'HTTP {resp.status_code}: {resp.text[:200]}'
+    except requests.RequestException as e:
+      last_err = str(e)
+
+    sleep = backoff ** attempt
+    print(f'[server-mode] retry {attempt + 1}/{retries}, sleeping {sleep:.1f}s'
+          f' ({last_err})')
+    time.sleep(sleep)
+
+  raise RuntimeError(f'Request failed after {retries} retries: {url} ({last_err})')
+
+
 def main(_):
   if _JAX_COMPILATION_CACHE_DIR.value is not None:
     jax.config.update(
@@ -944,6 +1190,20 @@ def main(_):
   except OSError as e:
     print(f'Failed to create output directory {_OUTPUT_DIR.value}: {e}')
     raise
+
+  # Server-mode short-circuit: everything below (GPU checks, model loading,
+  # local data pipeline) is skipped and the run happens on the remote server.
+  if _SERVER_MODE.value:
+    if not _SERVER_URL.value:
+      raise ValueError(
+          '--server_url must be provided when --server_mode=true.')
+    _run_client(
+        fold_inputs_iter=fold_inputs,
+        output_dir=_OUTPUT_DIR.value,
+        server_url=_SERVER_URL.value,
+    )
+    print('Done running server-mode fold jobs.')
+    return
 
   if _RUN_INFERENCE.value:
     # Fail early on incompatible devices, but only if we're running inference.

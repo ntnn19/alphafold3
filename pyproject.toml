@@ -38,6 +38,13 @@ gcsfs = [
 dev = [
     "pytest>=6.0",
 ]
+server = [
+    # Use `uv sync --group server` to enable --server_mode and af3_server.py.
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "pydantic>=2",
+    "requests>=2.32",
+]
 
 [tool.uv]
 package = true
