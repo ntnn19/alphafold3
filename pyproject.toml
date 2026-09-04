@@ -38,6 +38,13 @@ gcsfs = [
 dev = [
     "pytest>=6.0",
 ]
+server = [
+    "fastapi",
+    "uvicorn",
+    "pydantic",
+    "requests",
+    "sseclient-py",
+]
 
 [tool.uv]
 package = true
